@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut } from 'lucide-react';import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, where, setDoc, getDoc } from 'firebase/firestore';import { db } from './firebase';
 
 // Normalize text: remove accents, lowercase
 const normalize = (text) => {
@@ -214,6 +215,21 @@ const ShoppingListApp = () => {
     return () => unsubscribe();
   }, []);
   
+// Load active list from Firestore ONCE on login
+useEffect(() => {
+  if (!user) return;
+  
+  const loadList = async () => {
+    const listRef = doc(db, 'users', user.uid, 'lists', 'active');
+    const docSnap = await getDoc(listRef);
+    if (docSnap.exists()) {
+      setActiveList(docSnap.data());
+    }
+  };
+  
+  loadList();
+}, [user]);
+
   // Active list state
   const [activeList, setActiveList] = useState({
     id: Date.now(),
@@ -222,7 +238,25 @@ const ShoppingListApp = () => {
     createdAt: new Date().toISOString(),
     startedShoppingAt: null
   });
+
+  // Sync active list to Firestore
+useEffect(() => {
+  if (!user) return;
   
+  const saveList = async () => {
+    try {
+      const listRef = doc(db, 'users', user.uid, 'lists', 'active');
+      await setDoc(listRef, {
+        ...activeList,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error saving list:', error);
+    }
+  };
+  
+  saveList();
+}, [activeList, user]);
   // Archive
   const [archivedLists, setArchivedLists] = useState([]);
   
@@ -370,6 +404,16 @@ const ShoppingListApp = () => {
           lastPurchased: Date.now()
         }
       }));
+    }
+    // Save to Firestore
+    if (user) {
+      const listRef = doc(db, 'users', user.uid, 'lists', 'active');
+      const updatedList = {
+        ...activeList,
+        items: [...activeList.items, newItem],
+        updatedAt: new Date().toISOString()
+      };
+      setDoc(listRef, updatedList);
     }
   };
 
