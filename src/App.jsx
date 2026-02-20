@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut } from 'lucide-react';import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, where, setDoc, getDoc } from 'firebase/firestore';import { db } from './firebase';
@@ -264,6 +264,8 @@ useEffect(() => {
   const [userProductHistory, setUserProductHistory] = useState({});
   
   const [searchTerm, setSearchTerm] = useState('');
+  const [inlineSuggestion, setInlineSuggestion] = useState(null);
+  const inputRef = useRef(null);
   const [quantity, setQuantity] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -322,6 +324,36 @@ useEffect(() => {
 
   const suggestions = getSuggestions(searchTerm);
 
+  const getInlineCompletion = (input) => {
+    if (!input || input.length < 2) return null;
+    const normalized = normalize(input);
+    let best = null;
+    let bestCount = -1;
+
+    groceryDB.forEach(p => {
+      const normName = normalize(p.name);
+      if (normName.startsWith(normalized) && normName !== normalized) {
+        const count = userProductHistory[p.name]?.count || 0;
+        if (count > bestCount) { best = p.name; bestCount = count; }
+      }
+    });
+
+    Object.entries(userProductHistory).forEach(([name, data]) => {
+      const normName = normalize(name);
+      if (normName.startsWith(normalized) && normName !== normalized) {
+        if (data.count > bestCount) { best = name; bestCount = data.count; }
+      }
+    });
+
+    return best;
+  };
+
+  useLayoutEffect(() => {
+    if (inputRef.current && inlineSuggestion && searchTerm) {
+      inputRef.current.setSelectionRange(searchTerm.length, inlineSuggestion.length);
+    }
+  }, [searchTerm, inlineSuggestion]);
+
   const handleAddItem = (itemName = null, itemCategory = null) => {
     let name = itemName || searchTerm.trim();
     if (!name) return;
@@ -378,6 +410,7 @@ useEffect(() => {
     }));
     
     setSearchTerm('');
+    setInlineSuggestion(null);
     setQuantity('');
     setSelectedCategory('');
 
@@ -615,10 +648,35 @@ useEffect(() => {
                 <div className="relative mb-3">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                   <input
+                    ref={inputRef}
                     type="text"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleAddItem()}
+                    value={inlineSuggestion || searchTerm}
+                    onChange={(e) => {
+                      const newVal = e.target.value;
+                      setSearchTerm(newVal);
+                      setInlineSuggestion(getInlineCompletion(newVal));
+                    }}
+                    onKeyDown={(e) => {
+                      if (inlineSuggestion) {
+                        if (e.key === 'Tab' || e.key === 'ArrowRight') {
+                          e.preventDefault();
+                          setSearchTerm(inlineSuggestion);
+                          setInlineSuggestion(null);
+                          return;
+                        }
+                        if (e.key === 'Escape') {
+                          setInlineSuggestion(null);
+                          return;
+                        }
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddItem(inlineSuggestion);
+                          setInlineSuggestion(null);
+                          return;
+                        }
+                      }
+                      if (e.key === 'Enter') handleAddItem();
+                    }}
                     placeholder="Vad ska du handla?"
                     className="w-full bg-gray-700 text-white pl-10 pr-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
