@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut } from 'lucide-react';import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, where, setDoc, getDoc } from 'firebase/firestore';import { db } from './firebase';
+import { collection, doc, onSnapshot, setDoc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { db } from './firebase';
 
 // Normalize text: remove accents, lowercase
 const normalize = (text) => {
@@ -206,7 +207,12 @@ const findProductCategory = (searchTerm) => {
 const ShoppingListApp = () => {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('active');
-  
+  const [listId, setListId] = useState(null);
+
+  // Refs to prevent onSnapshot → save → onSnapshot feedback loop
+  const isRemoteUpdate = useRef(false);
+  const listLoaded = useRef(false);
+
   // Listen for auth changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -214,21 +220,37 @@ const ShoppingListApp = () => {
     });
     return () => unsubscribe();
   }, []);
-  
-// Load active list from Firestore ONCE on login
-useEffect(() => {
-  if (!user) return;
-  
-  const loadList = async () => {
-    const listRef = doc(db, 'users', user.uid, 'lists', 'active');
-    const docSnap = await getDoc(listRef);
-    if (docSnap.exists()) {
-      setActiveList(docSnap.data());
+
+  // On login: load or create user profile to get shared listId
+  useEffect(() => {
+    if (!user) {
+      listLoaded.current = false;
+      setListId(null);
+      return;
     }
-  };
-  
-  loadList();
-}, [user]);
+    const userRef = doc(db, 'users', user.uid);
+    const setup = async () => {
+      const userDoc = await getDoc(userRef);
+      if (userDoc.exists() && userDoc.data().listId) {
+        setListId(userDoc.data().listId);
+      } else {
+        // New user: create a shared list using their UID as the list ID
+        const newListId = user.uid;
+        await setDoc(doc(db, 'lists', newListId), {
+          id: newListId,
+          status: 'prep',
+          items: [],
+          members: [user.uid],
+          createdAt: new Date().toISOString(),
+          startedShoppingAt: null,
+          updatedAt: new Date().toISOString()
+        });
+        await setDoc(userRef, { listId: newListId, email: user.email });
+        setListId(newListId);
+      }
+    };
+    setup();
+  }, [user]);
 
   // Active list state
   const [activeList, setActiveList] = useState({
@@ -239,26 +261,55 @@ useEffect(() => {
     startedShoppingAt: null
   });
 
-  // Sync active list to Firestore
-useEffect(() => {
-  if (!user) return;
-  
-  const saveList = async () => {
-    try {
-      const listRef = doc(db, 'users', user.uid, 'lists', 'active');
-      await setDoc(listRef, {
-        ...activeList,
-        updatedAt: new Date().toISOString()
-      });
-    } catch (error) {
-      console.error('Error saving list:', error);
+  // Real-time sync: subscribe to shared active list via onSnapshot
+  useEffect(() => {
+    if (!user || !listId) return;
+    const listRef = doc(db, 'lists', listId);
+    const unsubscribe = onSnapshot(listRef, (docSnap) => {
+      if (docSnap.exists()) {
+        isRemoteUpdate.current = true;
+        setActiveList(docSnap.data());
+      }
+      listLoaded.current = true;
+    });
+    return () => unsubscribe();
+  }, [user, listId]);
+
+  // Save active list to Firestore on local changes (skip remote updates)
+  useEffect(() => {
+    if (!user || !listId || !listLoaded.current) return;
+    if (isRemoteUpdate.current) {
+      isRemoteUpdate.current = false;
+      return;
     }
-  };
-  
-  saveList();
-}, [activeList, user]);
+    const saveList = async () => {
+      try {
+        const listRef = doc(db, 'lists', listId);
+        await setDoc(listRef, {
+          ...activeList,
+          updatedAt: new Date().toISOString()
+        });
+      } catch (error) {
+        console.error('Error saving list:', error);
+      }
+    };
+    saveList();
+  }, [activeList, user, listId]);
+
   // Archive
   const [archivedLists, setArchivedLists] = useState([]);
+
+  // Real-time sync: subscribe to archived lists subcollection
+  useEffect(() => {
+    if (!user || !listId) return;
+    const archivedRef = collection(db, 'lists', listId, 'archived');
+    const unsubscribe = onSnapshot(archivedRef, (snapshot) => {
+      const lists = snapshot.docs.map(d => d.data());
+      lists.sort((a, b) => b.completedAt.localeCompare(a.completedAt));
+      setArchivedLists(lists);
+    });
+    return () => unsubscribe();
+  }, [user, listId]);
   
   // User's personal product history
   const [userProductHistory, setUserProductHistory] = useState({});
@@ -438,16 +489,6 @@ useEffect(() => {
         }
       }));
     }
-    // Save to Firestore
-    if (user) {
-      const listRef = doc(db, 'users', user.uid, 'lists', 'active');
-      const updatedList = {
-        ...activeList,
-        items: [...activeList.items, newItem],
-        updatedAt: new Date().toISOString()
-      };
-      setDoc(listRef, updatedList);
-    }
   };
 
   const toggleCheck = (id) => {
@@ -474,15 +515,20 @@ useEffect(() => {
     }));
   };
 
-  const completeShopping = () => {
-    // Archive current list
-    setArchivedLists(prev => [{
+  const completeShopping = async () => {
+    const archivedList = {
       id: activeList.id,
       completedAt: new Date().toISOString(),
       items: activeList.items
-    }, ...prev]);
-    
-    // Create new empty list
+    };
+
+    // Save archived list to Firestore (onSnapshot updates archivedLists state)
+    if (user && listId) {
+      const archivedRef = doc(db, 'lists', listId, 'archived', String(activeList.id));
+      await setDoc(archivedRef, archivedList);
+    }
+
+    // Create new empty active list (save useEffect persists it)
     setActiveList({
       id: Date.now(),
       status: 'prep',
@@ -504,6 +550,9 @@ useEffect(() => {
   const handleLogout = async () => {
     try {
       await signOut(auth);
+      setListId(null);
+      listLoaded.current = false;
+      setArchivedLists([]);
       setActiveList({
         id: Date.now(),
         status: 'prep',
@@ -515,11 +564,25 @@ useEffect(() => {
     }
   };
 
-  const handleInvite = () => {
-    if (!inviteEmail.trim()) return;
-    alert(`Inbjudan skulle skickas till ${inviteEmail} (kommer implementeras)`);
-    setInviteEmail('');
-    setShowInviteModal(false);
+  const handleJoinList = async () => {
+    const joinCode = inviteEmail.trim();
+    if (!joinCode || !user) return;
+    try {
+      const sharedListRef = doc(db, 'lists', joinCode);
+      const sharedListDoc = await getDoc(sharedListRef);
+      if (!sharedListDoc.exists()) {
+        alert('Hittade ingen lista med den koden. Kontrollera koden och försök igen.');
+        return;
+      }
+      await updateDoc(sharedListRef, { members: arrayUnion(user.uid) });
+      await setDoc(doc(db, 'users', user.uid), { listId: joinCode, email: user.email });
+      setListId(joinCode);
+      setInviteEmail('');
+      setShowInviteModal(false);
+    } catch (error) {
+      console.error('Error joining list:', error);
+      alert('Kunde inte gå med i listan: ' + error.message);
+    }
   };
 
   // Filter items in shopping mode
@@ -880,7 +943,7 @@ useEffect(() => {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">Bjud in till lista</h3>
+              <h3 className="text-xl font-bold">Dela listan</h3>
               <button
                 onClick={() => setShowInviteModal(false)}
                 className="p-1 hover:bg-gray-700 rounded"
@@ -888,16 +951,29 @@ useEffect(() => {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <p className="text-gray-400 mb-4">
-              Ange email-adressen till personen du vill dela listan med
-            </p>
+            <p className="text-gray-400 mb-2">Din lista-kod (dela med din partner):</p>
+            <div className="flex gap-2 mb-6">
+              <input
+                readOnly
+                value={listId || ''}
+                onClick={(e) => e.target.select()}
+                className="flex-1 bg-gray-700 text-white px-4 py-2 rounded-lg font-mono text-sm select-all"
+              />
+              <button
+                onClick={() => navigator.clipboard.writeText(listId || '')}
+                className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors text-sm"
+              >
+                Kopiera
+              </button>
+            </div>
+            <p className="text-gray-400 mb-2">Gå med i en annans lista:</p>
             <input
-              type="email"
+              type="text"
               value={inviteEmail}
               onChange={(e) => setInviteEmail(e.target.value)}
-              placeholder="namn@example.com"
+              placeholder="Ange lista-kod"
               className="w-full bg-gray-700 text-white px-4 py-2 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500"
-              onKeyPress={(e) => e.key === 'Enter' && handleInvite()}
+              onKeyDown={(e) => e.key === 'Enter' && handleJoinList()}
             />
             <div className="flex gap-2">
               <button
@@ -907,10 +983,10 @@ useEffect(() => {
                 Avbryt
               </button>
               <button
-                onClick={handleInvite}
+                onClick={handleJoinList}
                 className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded-lg transition-colors"
               >
-                Skicka inbjudan
+                Gå med i lista
               </button>
             </div>
           </div>
