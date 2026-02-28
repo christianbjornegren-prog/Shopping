@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
-import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut } from 'lucide-react';import { auth, googleProvider } from './firebase';
+import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp } from 'lucide-react';import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, onSnapshot, setDoc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { db } from './firebase';
@@ -293,33 +293,22 @@ const ShoppingListApp = () => {
     saveList();
   }, [activeList, user, listId]);
 
-  // Archive
-  const [archivedLists, setArchivedLists] = useState([]);
-
-  // Real-time sync: subscribe to archived lists subcollection
-  useEffect(() => {
-    if (!user || !listId) return;
-    const archivedRef = collection(db, 'lists', listId, 'archived');
-    const unsubscribe = onSnapshot(archivedRef, (snapshot) => {
-      const lists = snapshot.docs.map(d => d.data());
-      lists.sort((a, b) => b.completedAt.localeCompare(a.completedAt));
-      setArchivedLists(lists);
-    });
-    return () => unsubscribe();
-  }, [user, listId]);
-  
   // User's personal product history
   const [userProductHistory, setUserProductHistory] = useState({});
   
   const [searchTerm, setSearchTerm] = useState('');
   const [inlineSuggestion, setInlineSuggestion] = useState(null);
   const inputRef = useRef(null);
-  const [quantity, setQuantity] = useState('');
   const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [checkedExpanded, setCheckedExpanded] = useState(false);
+  const [inkopCheckedExpanded, setInkopCheckedExpanded] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState(null);
   const dropdownRef = useRef(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inkopList, setInkopList] = useState({ id: Date.now(), items: [] });
+  const inkopLoaded = useRef(false);
+  const isInkopRemoteUpdate = useRef(false);
 
   const categories = [
     'Frukt & Grönt',
@@ -367,7 +356,9 @@ const ShoppingListApp = () => {
     });
     
     // Sort by purchase frequency
+    const normInput = normalize(input);
     return suggestions
+      .filter(s => !(normInput.includes(normalize(s.name)) && normInput.length > normalize(s.name).length))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
   };
@@ -398,89 +389,99 @@ const ShoppingListApp = () => {
     return best;
   };
 
+  const buildUpdatedHistory = (name, category, currentHistory) => {
+    const existingKey = Object.keys(currentHistory).find(
+      key => normalize(key) === normalize(name)
+    );
+    if (existingKey) {
+      return {
+        ...currentHistory,
+        [existingKey]: {
+          ...currentHistory[existingKey],
+          count: currentHistory[existingKey].count + 1,
+          lastPurchased: Date.now()
+        }
+      };
+    }
+    return {
+      ...currentHistory,
+      [name]: { category: category || '', count: 1, lastPurchased: Date.now() }
+    };
+  };
+
+  const persistHistory = (history) => {
+    if (user) {
+      const ref = doc(db, 'users', user.uid, 'productHistory', 'data');
+      setDoc(ref, history).catch(err => console.error('Error saving history:', err));
+    }
+  };
+
   const handleAddItem = (itemName = null, itemCategory = null) => {
     let name = itemName || searchTerm.trim();
     if (!name) return;
-    
-    // Try to find product in database to get proper capitalization
-    const dbProduct = groceryDB.find(p => 
-      normalize(p.name) === normalize(name) || 
+
+    // Find DB product for categorization only – keep user's input as name
+    const dbProduct = groceryDB.find(p =>
+      normalize(p.name) === normalize(name) ||
       p.aliases.some(a => normalize(a) === normalize(name))
     );
-    
-    // Use database name for consistent capitalization
-    if (dbProduct && !itemName) {
-      name = dbProduct.name;
-    } else if (!itemName) {
-      // Capitalize first letter of user input
+
+    if (!itemName) {
       name = name.charAt(0).toUpperCase() + name.slice(1);
     }
-    
-    // Smart categorization
+
     let category = itemCategory;
-    
     if (!category) {
-      // Check user history first
       const historyEntry = Object.entries(userProductHistory).find(
         ([histName]) => normalize(histName) === normalize(name)
       );
-      
       if (historyEntry) {
         category = historyEntry[1].category;
       } else if (dbProduct) {
         category = dbProduct.category;
       } else {
-        // Fuzzy match for category
         const result = findProductCategory(name);
-        if (result) {
-          category = result.category;
-        }
+        if (result) category = result.category;
       }
     }
 
     const newItem = {
       id: Date.now(),
-      name: name,
-      quantity: quantity.trim(),
+      name,
       category: category || '',
       checked: false,
       addedBy: user?.email,
       addedAt: new Date().toISOString()
     };
 
-    setActiveList(prev => ({
-      ...prev,
-      items: [...prev.items, newItem]
-    }));
-    
+    setActiveList(prev => ({ ...prev, items: [...prev.items, newItem] }));
     setSearchTerm('');
     setInlineSuggestion(null);
-    setQuantity('');
 
-    // Update user product history with normalized key matching
-    const existingHistoryKey = Object.keys(userProductHistory).find(
-      key => normalize(key) === normalize(name)
-    );
-    
-    if (existingHistoryKey) {
-      setUserProductHistory(prev => ({
-        ...prev,
-        [existingHistoryKey]: {
-          ...prev[existingHistoryKey],
-          count: prev[existingHistoryKey].count + 1,
-          lastPurchased: Date.now()
-        }
-      }));
-    } else {
-      setUserProductHistory(prev => ({
-        ...prev,
-        [name]: {
-          category: category || '',
-          count: 1,
-          lastPurchased: Date.now()
-        }
-      }));
+    const updatedHistory = buildUpdatedHistory(name, category, userProductHistory);
+    setUserProductHistory(updatedHistory);
+    persistHistory(updatedHistory);
+  };
+
+  const handleAddInkopItem = (itemName = null) => {
+    let name = itemName || searchTerm.trim();
+    if (!name) return;
+    if (!itemName) {
+      name = name.charAt(0).toUpperCase() + name.slice(1);
     }
+    const newItem = {
+      id: Date.now(),
+      name,
+      checked: false,
+      addedBy: user?.email,
+      addedAt: new Date().toISOString()
+    };
+    setInkopList(prev => ({ ...prev, items: [...prev.items, newItem] }));
+    setSearchTerm('');
+    setInlineSuggestion(null);
+    const updatedHistory = buildUpdatedHistory(name, '', userProductHistory);
+    setUserProductHistory(updatedHistory);
+    persistHistory(updatedHistory);
   };
 
   const toggleCheck = (id) => {
@@ -499,25 +500,18 @@ const ShoppingListApp = () => {
     }));
   };
 
-  const completeShopping = async () => {
-    const archivedList = {
-      id: activeList.id,
-      completedAt: new Date().toISOString(),
-      items: activeList.items
-    };
+  const toggleInkopCheck = (id) => {
+    setInkopList(prev => ({
+      ...prev,
+      items: prev.items.map(item => item.id === id ? { ...item, checked: !item.checked } : item)
+    }));
+  };
 
-    // Save archived list to Firestore (onSnapshot updates archivedLists state)
-    if (user && listId) {
-      const archivedRef = doc(db, 'lists', listId, 'archived', String(activeList.id));
-      await setDoc(archivedRef, archivedList);
-    }
-
-    // Create new empty active list (save useEffect persists it)
-    setActiveList({
-      id: Date.now(),
-      items: [],
-      createdAt: new Date().toISOString()
-    });
+  const deleteInkopItem = (id) => {
+    setInkopList(prev => ({
+      ...prev,
+      items: prev.items.filter(item => item.id !== id)
+    }));
   };
 
   const handleLogin = async () => {
@@ -534,12 +528,10 @@ const ShoppingListApp = () => {
       await signOut(auth);
       setListId(null);
       listLoaded.current = false;
-      setArchivedLists([]);
-      setActiveList({
-        id: Date.now(),
-        items: [],
-        createdAt: new Date().toISOString()
-      });
+      inkopLoaded.current = false;
+      setActiveList({ id: Date.now(), items: [], createdAt: new Date().toISOString() });
+      setInkopList({ id: Date.now(), items: [] });
+      setUserProductHistory({});
     } catch (error) {
       console.error('Logout error:', error);
     }
@@ -565,6 +557,38 @@ const ShoppingListApp = () => {
       alert('Kunde inte gå med i listan: ' + error.message);
     }
   };
+
+  // Load product history from Firestore on login
+  useEffect(() => {
+    if (!user) { setUserProductHistory({}); return; }
+    const ref = doc(db, 'users', user.uid, 'productHistory', 'data');
+    getDoc(ref).then(snap => {
+      if (snap.exists()) setUserProductHistory(snap.data());
+    }).catch(err => console.error('Error loading history:', err));
+  }, [user]);
+
+  // Subscribe to inköp list
+  useEffect(() => {
+    if (!user || !listId) return;
+    const inkopRef = doc(db, 'lists', listId, 'inköp', 'active');
+    const unsubscribe = onSnapshot(inkopRef, (docSnap) => {
+      if (docSnap.exists()) {
+        isInkopRemoteUpdate.current = true;
+        setInkopList(docSnap.data());
+      }
+      inkopLoaded.current = true;
+    });
+    return () => unsubscribe();
+  }, [user, listId]);
+
+  // Save inköp list on local changes
+  useEffect(() => {
+    if (!user || !listId || !inkopLoaded.current) return;
+    if (isInkopRemoteUpdate.current) { isInkopRemoteUpdate.current = false; return; }
+    const inkopRef = doc(db, 'lists', listId, 'inköp', 'active');
+    setDoc(inkopRef, { ...inkopList, updatedAt: new Date().toISOString() })
+      .catch(err => console.error('Error saving inköp list:', err));
+  }, [inkopList, user, listId]);
 
   useEffect(() => {
     if (!editingCategoryId || !dropdownPosition) return;
@@ -596,9 +620,6 @@ const ShoppingListApp = () => {
 
       <div className="flex-grow">
         <div className="font-medium">{item.name}</div>
-        {item.quantity && (
-          <div className="text-sm text-gray-400">{item.quantity}</div>
-        )}
       </div>
 
       <div className="relative">
@@ -661,7 +682,7 @@ const ShoppingListApp = () => {
       <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
         <div className="bg-gray-800 rounded-lg shadow-xl p-8 max-w-md w-full text-center">
           <ShoppingCart className="w-16 h-16 text-green-500 mx-auto mb-4" />
-          <h1 className="text-3xl font-bold text-white mb-2">ShoppingList</h1>
+          <h1 className="text-3xl font-bold text-white mb-2">CHRELIN</h1>
           <p className="text-gray-400 mb-6">Smart inköpslista för svenska matvarubutiker</p>
           <button
             onClick={handleLogin}
@@ -689,8 +710,7 @@ const ShoppingListApp = () => {
             <div className="flex items-center gap-3">
               <ShoppingCart className="w-8 h-8 text-green-500" />
               <div>
-                <h1 className="text-xl font-bold">ShoppingList</h1>
-                <p className="text-sm text-gray-400">{user?.email}</p>
+                <h1 className="text-xl font-bold">CHRELIN</h1>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -725,17 +745,17 @@ const ShoppingListApp = () => {
                   : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >
-              Aktiv lista ({totalCount})
+              Matvaror ({totalCount})
             </button>
             <button
-              onClick={() => setActiveTab('archive')}
+              onClick={() => setActiveTab('inkop')}
               className={`py-3 px-4 font-medium border-b-2 transition-colors ${
-                activeTab === 'archive'
+                activeTab === 'inkop'
                   ? 'border-green-500 text-white'
                   : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >
-              Historik ({archivedLists.length})
+              Inköp ({inkopList.items.filter(i => !i.checked).length})
             </button>
           </div>
         </div>
@@ -812,23 +832,13 @@ const ShoppingListApp = () => {
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <input
-                    type="text"
-                    value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
-                    placeholder="Antal (valfritt)"
-                    className="bg-gray-700 text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  />
-
-                  <button
-                    onClick={() => handleAddItem()}
-                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
-                  >
-                    <Plus className="w-5 h-5" />
-                    Lägg till
-                  </button>
-                </div>
+                <button
+                  onClick={() => handleAddItem()}
+                  className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                >
+                  <Plus className="w-5 h-5" />
+                  Lägg till
+                </button>
             </div>
 
             {/* Shopping List */}
@@ -873,15 +883,31 @@ const ShoppingListApp = () => {
                     );
                   })}
 
-                  {/* Klart section */}
+                  {/* Collapsed checked items */}
                   {checkedCount > 0 && (
                     <div className="bg-gray-800 rounded-lg overflow-hidden">
-                      <div className="bg-gray-750 px-4 py-2 font-semibold text-gray-400 border-b border-gray-700">
-                        Klart ✓ ({checkedCount})
-                      </div>
-                      <div className="divide-y divide-gray-700">
-                        {activeList.items.filter(i => i.checked).map(item => renderItem(item))}
-                      </div>
+                      <button
+                        onClick={() => setCheckedExpanded(prev => !prev)}
+                        className="w-full px-4 py-3 flex items-center justify-between text-gray-400 hover:bg-gray-700 transition-colors"
+                      >
+                        <span>{checkedCount} köpta varor</span>
+                        {checkedExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      </button>
+                      {checkedExpanded && (
+                        <div className="divide-y divide-gray-700 border-t border-gray-700">
+                          {activeList.items.filter(i => i.checked).map(item => (
+                            <div key={item.id} className="px-4 py-3 flex items-center gap-3">
+                              <button
+                                onClick={() => toggleCheck(item.id)}
+                                className="flex-shrink-0 w-6 h-6 rounded border-2 bg-green-500 border-green-500 flex items-center justify-center"
+                              >
+                                <Check className="w-4 h-4 text-white" />
+                              </button>
+                              <span className="flex-grow line-through text-gray-500">{item.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -889,37 +915,136 @@ const ShoppingListApp = () => {
             )}
           </>
         ) : (
-          /* Archive Tab */
-          <div className="space-y-4">
-            {archivedLists.length === 0 ? (
+          /* Inköp Tab */
+          <>
+            {/* Add Item Section */}
+            <div className="bg-gray-800 rounded-lg p-4 mb-6">
+              <div className="relative mb-3 bg-gray-700 rounded-lg">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                {inlineSuggestion && searchTerm && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-0 flex items-center pl-10 pr-4 text-gray-500 pointer-events-none overflow-hidden whitespace-nowrap select-none"
+                  >
+                    {inlineSuggestion}
+                  </span>
+                )}
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => {
+                    const newVal = e.target.value;
+                    setSearchTerm(newVal);
+                    setInlineSuggestion(getInlineCompletion(newVal));
+                  }}
+                  onKeyDown={(e) => {
+                    if (inlineSuggestion) {
+                      if (e.key === 'Tab' || e.key === 'ArrowRight') {
+                        e.preventDefault();
+                        setSearchTerm(inlineSuggestion);
+                        setInlineSuggestion(null);
+                        return;
+                      }
+                      if (e.key === 'Escape') { setInlineSuggestion(null); return; }
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddInkopItem(inlineSuggestion);
+                        setInlineSuggestion(null);
+                        return;
+                      }
+                    }
+                    if (e.key === 'Enter') handleAddInkopItem();
+                  }}
+                  placeholder="Vad ska du handla?"
+                  className="relative w-full bg-transparent text-white pl-10 pr-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+                {suggestions.length > 0 && searchTerm && (
+                  <div className="absolute w-full bg-gray-700 mt-1 rounded-lg shadow-lg overflow-hidden z-20 border border-gray-600">
+                    {suggestions.map((suggestion, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => handleAddInkopItem(suggestion.name)}
+                        className="w-full px-4 py-3 text-left hover:bg-gray-600 flex items-center border-b border-gray-600 last:border-b-0"
+                      >
+                        <span className="font-medium">{suggestion.name}</span>
+                        {suggestion.count > 0 && (
+                          <span className="text-xs text-gray-400 ml-2">({suggestion.count}×)</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => handleAddInkopItem()}
+                className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+              >
+                <Plus className="w-5 h-5" />
+                Lägg till
+              </button>
+            </div>
+
+            {/* Inköp List */}
+            {inkopList.items.length === 0 ? (
               <div className="text-center py-12 text-gray-500">
-                <Archive className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                <p>Ingen historik än</p>
-                <p className="text-sm mt-2">Dina genomförda shoppingturer visas här</p>
+                <ShoppingCart className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                <p>Din inköpslista är tom</p>
+                <p className="text-sm mt-2">Börja lägga till varor ovan</p>
               </div>
             ) : (
-              archivedLists.map(list => (
-                <div key={list.id} className="bg-gray-800 rounded-lg overflow-hidden">
-                  <div className="bg-gray-750 px-4 py-3 border-b border-gray-700 flex justify-between items-center">
-                    <div>
-                      <div className="font-semibold">Shopping {formatDate(list.completedAt)}</div>
-                      <div className="text-sm text-gray-400">{list.items.length} varor</div>
-                    </div>
-                    <Clock className="w-5 h-5 text-gray-400" />
-                  </div>
-                  <div className="p-4">
-                    <div className="flex flex-wrap gap-2">
-                      {list.items.map((item, idx) => (
-                        <span key={idx} className="bg-gray-700 px-3 py-1 rounded-full text-sm">
-                          {item.name} {item.quantity && `(${item.quantity})`}
-                        </span>
+              <div className="space-y-4">
+                {inkopList.items.filter(i => !i.checked).length > 0 && (
+                  <div className="bg-gray-800 rounded-lg overflow-hidden">
+                    <div className="divide-y divide-gray-700">
+                      {inkopList.items.filter(i => !i.checked).map(item => (
+                        <div key={item.id} className="px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors">
+                          <button
+                            onClick={() => toggleInkopCheck(item.id)}
+                            className="flex-shrink-0 w-6 h-6 rounded border-2 border-gray-600 hover:border-green-500 flex items-center justify-center transition-colors"
+                          />
+                          <span className="flex-grow font-medium">{item.name}</span>
+                          <button
+                            onClick={() => deleteInkopItem(item.id)}
+                            className="flex-shrink-0 p-2 hover:bg-gray-600 rounded-lg transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-400" />
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>
-                </div>
-              ))
+                )}
+
+                {inkopList.items.filter(i => i.checked).length > 0 && (
+                  <div className="bg-gray-800 rounded-lg overflow-hidden">
+                    <button
+                      onClick={() => setInkopCheckedExpanded(prev => !prev)}
+                      className="w-full px-4 py-3 flex items-center justify-between text-gray-400 hover:bg-gray-700 transition-colors"
+                    >
+                      <span>{inkopList.items.filter(i => i.checked).length} köpta varor</span>
+                      {inkopCheckedExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </button>
+                    {inkopCheckedExpanded && (
+                      <div className="divide-y divide-gray-700 border-t border-gray-700">
+                        {inkopList.items.filter(i => i.checked).map(item => (
+                          <div key={item.id} className="px-4 py-3 flex items-center gap-3">
+                            <button
+                              onClick={() => toggleInkopCheck(item.id)}
+                              className="flex-shrink-0 w-6 h-6 rounded border-2 bg-green-500 border-green-500 flex items-center justify-center"
+                            >
+                              <Check className="w-4 h-4 text-white" />
+                            </button>
+                            <span className="flex-grow line-through text-gray-500">{item.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
-          </div>
+          </>
         )}
       </div>
 
