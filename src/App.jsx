@@ -399,12 +399,6 @@ const ShoppingListApp = () => {
     return best;
   };
 
-  useLayoutEffect(() => {
-    if (inputRef.current && inlineSuggestion && searchTerm) {
-      inputRef.current.setSelectionRange(searchTerm.length, inlineSuggestion.length);
-    }
-  }, [searchTerm, inlineSuggestion]);
-
   const handleAddItem = (itemName = null, itemCategory = null) => {
     let name = itemName || searchTerm.trim();
     if (!name) return;
@@ -708,12 +702,20 @@ const ShoppingListApp = () => {
             {/* Add Item Section - only in prep mode */}
             {activeList.status === 'prep' && (
               <div className="bg-gray-800 rounded-lg p-4 mb-6">
-                <div className="relative mb-3">
+                <div className="relative mb-3 bg-gray-700 rounded-lg">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                  {inlineSuggestion && searchTerm && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-0 flex items-center pl-10 pr-4 text-gray-500 pointer-events-none overflow-hidden whitespace-nowrap select-none"
+                    >
+                      {inlineSuggestion}
+                    </span>
+                  )}
                   <input
                     ref={inputRef}
                     type="text"
-                    value={inlineSuggestion || searchTerm}
+                    value={searchTerm}
                     onChange={(e) => {
                       const newVal = e.target.value;
                       setSearchTerm(newVal);
@@ -741,7 +743,7 @@ const ShoppingListApp = () => {
                       if (e.key === 'Enter') handleAddItem();
                     }}
                     placeholder="Vad ska du handla?"
-                    className="w-full bg-gray-700 text-white pl-10 pr-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="relative w-full bg-transparent text-white pl-10 pr-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
                   
                   {suggestions.length > 0 && searchTerm && (
