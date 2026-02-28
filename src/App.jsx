@@ -601,21 +601,35 @@ const ShoppingListApp = () => {
         )}
       </div>
 
-      <button
-        onClick={(e) => {
-          if (window.innerWidth < 768) {
-            setEditingCategoryId(item.id);
-            setDropdownPosition(null);
-          } else {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setDropdownPosition({ top: rect.bottom, left: rect.left });
-            setEditingCategoryId(item.id);
-          }
-        }}
-        className={`text-xs px-2 py-1 rounded ${item.category ? 'text-green-400' : 'text-yellow-400'}`}
-      >
-        {item.category || 'Osorterat'}
-      </button>
+      <div className="relative">
+        <button
+          onClick={(e) => {
+            if (window.innerWidth >= 768) {
+              const rect = e.currentTarget.getBoundingClientRect();
+              setDropdownPosition({ top: rect.bottom, left: rect.left });
+              setEditingCategoryId(item.id);
+            }
+          }}
+          className={`text-xs px-2 py-1 rounded ${item.category ? 'text-green-400' : 'text-yellow-400'}`}
+        >
+          {item.category || 'Osorterat'}
+        </button>
+        <select
+          value={item.category || ''}
+          onChange={(e) => {
+            setActiveList(prev => ({
+              ...prev,
+              items: prev.items.map(i => i.id === item.id ? { ...i, category: e.target.value } : i)
+            }));
+          }}
+          className="opacity-0 absolute inset-0 w-full h-full cursor-pointer md:hidden"
+        >
+          <option value="">Osorterat</option>
+          {categories.map(cat => (
+            <option key={cat} value={cat}>{cat}</option>
+          ))}
+        </select>
+      </div>
 
       <button
         onClick={() => deleteItem(item.id)}
@@ -993,52 +1007,6 @@ const ShoppingListApp = () => {
               </button>
             );
           })}
-        </div>,
-        document.body
-      )}
-
-      {/* Mobile bottom sheet */}
-      {editingCategoryId && !dropdownPosition && ReactDOM.createPortal(
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black bg-opacity-50"
-            onClick={() => setEditingCategoryId(null)}
-          />
-          <div
-            className="absolute bottom-0 left-0 right-0 bg-gray-800 rounded-t-2xl"
-            style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
-          >
-            <div className="px-6 py-4 border-b border-gray-700">
-              <p className="text-center text-gray-400">Välj kategori</p>
-            </div>
-            {(() => {
-              const editingItem = activeList.items.find(i => i.id === editingCategoryId);
-              return categories.map(cat => (
-                <button
-                  key={cat}
-                  onClick={() => {
-                    setActiveList(prev => ({
-                      ...prev,
-                      items: prev.items.map(i => i.id === editingCategoryId ? { ...i, category: cat } : i)
-                    }));
-                    setEditingCategoryId(null);
-                  }}
-                  className="w-full text-left py-4 px-6 text-lg hover:bg-gray-700 flex items-center gap-3 text-white border-b border-gray-700 last:border-b-0"
-                >
-                  <span className={`w-6 ${editingItem?.category === cat ? 'text-green-400' : ''}`}>
-                    {editingItem?.category === cat ? '✓' : ''}
-                  </span>
-                  {cat}
-                </button>
-              ));
-            })()}
-            <button
-              onClick={() => setEditingCategoryId(null)}
-              className="w-full py-4 px-6 text-lg text-gray-400 hover:bg-gray-700 border-t border-gray-700"
-            >
-              Avbryt
-            </button>
-          </div>
         </div>,
         document.body
       )}
