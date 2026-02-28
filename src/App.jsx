@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut } from 'lucide-react';import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, onSnapshot, setDoc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
@@ -315,6 +316,8 @@ const ShoppingListApp = () => {
   const inputRef = useRef(null);
   const [quantity, setQuantity] = useState('');
   const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [dropdownPosition, setDropdownPosition] = useState(null);
+  const dropdownRef = useRef(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
 
@@ -563,6 +566,18 @@ const ShoppingListApp = () => {
     }
   };
 
+  useEffect(() => {
+    if (!editingCategoryId || !dropdownPosition) return;
+    const handleMouseDown = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setEditingCategoryId(null);
+        setDropdownPosition(null);
+      }
+    };
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [editingCategoryId, dropdownPosition]);
+
   const checkedCount = activeList.items.filter(i => i.checked).length;
   const totalCount = activeList.items.length;
 
@@ -586,34 +601,21 @@ const ShoppingListApp = () => {
         )}
       </div>
 
-      <div className="relative">
-        <button
-          onClick={() => setEditingCategoryId(editingCategoryId === item.id ? null : item.id)}
-          className={`text-xs px-2 py-1 rounded ${item.category ? 'text-green-400' : 'text-yellow-400'}`}
-        >
-          {item.category || 'Osorterat'}
-        </button>
-        {editingCategoryId === item.id && (
-          <div className="absolute right-0 top-full z-20 bg-gray-700 rounded-lg shadow-lg border border-gray-600 min-w-max">
-            {categories.map(cat => (
-              <button
-                key={cat}
-                onClick={() => {
-                  setActiveList(prev => ({
-                    ...prev,
-                    items: prev.items.map(i => i.id === item.id ? { ...i, category: cat } : i)
-                  }));
-                  setEditingCategoryId(null);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-600 text-sm flex items-center gap-2"
-              >
-                <span className="w-4 inline-block">{item.category === cat ? '✓' : ''}</span>
-                {cat}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      <button
+        onClick={(e) => {
+          if (window.innerWidth < 768) {
+            setEditingCategoryId(item.id);
+            setDropdownPosition(null);
+          } else {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setDropdownPosition({ top: rect.bottom, left: rect.left });
+            setEditingCategoryId(item.id);
+          }
+        }}
+        className={`text-xs px-2 py-1 rounded ${item.category ? 'text-green-400' : 'text-yellow-400'}`}
+      >
+        {item.category || 'Osorterat'}
+      </button>
 
       <button
         onClick={() => deleteItem(item.id)}
@@ -824,9 +826,6 @@ const ShoppingListApp = () => {
               </div>
             ) : (
               <>
-                {editingCategoryId && (
-                  <div className="fixed inset-0 z-10" onClick={() => setEditingCategoryId(null)} />
-                )}
                 <div className="space-y-4">
                   {/* Osorterat section */}
                   {(() => {
@@ -963,6 +962,85 @@ const ShoppingListApp = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Desktop portal dropdown */}
+      {editingCategoryId && dropdownPosition && ReactDOM.createPortal(
+        <div
+          ref={dropdownRef}
+          style={{ position: 'fixed', top: dropdownPosition.top, left: dropdownPosition.left }}
+          className="bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-48"
+        >
+          {categories.map(cat => {
+            const editingItem = activeList.items.find(i => i.id === editingCategoryId);
+            return (
+              <button
+                key={cat}
+                onClick={() => {
+                  setActiveList(prev => ({
+                    ...prev,
+                    items: prev.items.map(i => i.id === editingCategoryId ? { ...i, category: cat } : i)
+                  }));
+                  setEditingCategoryId(null);
+                  setDropdownPosition(null);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-700 text-sm flex items-center gap-2 text-white first:rounded-t-lg last:rounded-b-lg"
+              >
+                <span className={`w-4 inline-block ${editingItem?.category === cat ? 'text-green-400' : ''}`}>
+                  {editingItem?.category === cat ? '✓' : ''}
+                </span>
+                {cat}
+              </button>
+            );
+          })}
+        </div>,
+        document.body
+      )}
+
+      {/* Mobile bottom sheet */}
+      {editingCategoryId && !dropdownPosition && ReactDOM.createPortal(
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-50"
+            onClick={() => setEditingCategoryId(null)}
+          />
+          <div
+            className="absolute bottom-0 left-0 right-0 bg-gray-800 rounded-t-2xl"
+            style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+          >
+            <div className="px-6 py-4 border-b border-gray-700">
+              <p className="text-center text-gray-400">Välj kategori</p>
+            </div>
+            {(() => {
+              const editingItem = activeList.items.find(i => i.id === editingCategoryId);
+              return categories.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => {
+                    setActiveList(prev => ({
+                      ...prev,
+                      items: prev.items.map(i => i.id === editingCategoryId ? { ...i, category: cat } : i)
+                    }));
+                    setEditingCategoryId(null);
+                  }}
+                  className="w-full text-left py-4 px-6 text-lg hover:bg-gray-700 flex items-center gap-3 text-white border-b border-gray-700 last:border-b-0"
+                >
+                  <span className={`w-6 ${editingItem?.category === cat ? 'text-green-400' : ''}`}>
+                    {editingItem?.category === cat ? '✓' : ''}
+                  </span>
+                  {cat}
+                </button>
+              ));
+            })()}
+            <button
+              onClick={() => setEditingCategoryId(null)}
+              className="w-full py-4 px-6 text-lg text-gray-400 hover:bg-gray-700 border-t border-gray-700"
+            >
+              Avbryt
+            </button>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );
