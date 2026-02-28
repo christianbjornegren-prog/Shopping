@@ -238,11 +238,9 @@ const ShoppingListApp = () => {
         const newListId = user.uid;
         await setDoc(doc(db, 'lists', newListId), {
           id: newListId,
-          status: 'prep',
           items: [],
           members: [user.uid],
           createdAt: new Date().toISOString(),
-          startedShoppingAt: null,
           updatedAt: new Date().toISOString()
         });
         await setDoc(userRef, { listId: newListId, email: user.email });
@@ -255,10 +253,8 @@ const ShoppingListApp = () => {
   // Active list state
   const [activeList, setActiveList] = useState({
     id: Date.now(),
-    status: 'prep',
     items: [],
-    createdAt: new Date().toISOString(),
-    startedShoppingAt: null
+    createdAt: new Date().toISOString()
   });
 
   // Real-time sync: subscribe to shared active list via onSnapshot
@@ -318,7 +314,7 @@ const ShoppingListApp = () => {
   const [inlineSuggestion, setInlineSuggestion] = useState(null);
   const inputRef = useRef(null);
   const [quantity, setQuantity] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('');
+  const [editingCategoryId, setEditingCategoryId] = useState(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
 
@@ -418,7 +414,7 @@ const ShoppingListApp = () => {
     }
     
     // Smart categorization
-    let category = itemCategory || selectedCategory;
+    let category = itemCategory;
     
     if (!category) {
       // Check user history first
@@ -443,7 +439,7 @@ const ShoppingListApp = () => {
       id: Date.now(),
       name: name,
       quantity: quantity.trim(),
-      category: category || 'Övrigt',
+      category: category || '',
       checked: false,
       addedBy: user?.email,
       addedAt: new Date().toISOString()
@@ -457,7 +453,6 @@ const ShoppingListApp = () => {
     setSearchTerm('');
     setInlineSuggestion(null);
     setQuantity('');
-    setSelectedCategory('');
 
     // Update user product history with normalized key matching
     const existingHistoryKey = Object.keys(userProductHistory).find(
@@ -477,7 +472,7 @@ const ShoppingListApp = () => {
       setUserProductHistory(prev => ({
         ...prev,
         [name]: {
-          category: category || 'Övrigt',
+          category: category || '',
           count: 1,
           lastPurchased: Date.now()
         }
@@ -501,14 +496,6 @@ const ShoppingListApp = () => {
     }));
   };
 
-  const startShopping = () => {
-    setActiveList(prev => ({
-      ...prev,
-      status: 'shopping',
-      startedShoppingAt: new Date().toISOString()
-    }));
-  };
-
   const completeShopping = async () => {
     const archivedList = {
       id: activeList.id,
@@ -525,10 +512,8 @@ const ShoppingListApp = () => {
     // Create new empty active list (save useEffect persists it)
     setActiveList({
       id: Date.now(),
-      status: 'prep',
       items: [],
-      createdAt: new Date().toISOString(),
-      startedShoppingAt: null
+      createdAt: new Date().toISOString()
     });
   };
 
@@ -549,7 +534,6 @@ const ShoppingListApp = () => {
       setArchivedLists([]);
       setActiveList({
         id: Date.now(),
-        status: 'prep',
         items: [],
         createdAt: new Date().toISOString()
       });
@@ -579,20 +563,66 @@ const ShoppingListApp = () => {
     }
   };
 
-  // Filter items in shopping mode
-  const displayItems = activeList.status === 'shopping' 
-    ? activeList.items.filter(i => !i.checked)
-    : activeList.items;
-
-  const displayItemsByCategory = displayItems.reduce((acc, item) => {
-    const cat = item.category || 'Övrigt';
-    if (!acc[cat]) acc[cat] = [];
-    acc[cat].push(item);
-    return acc;
-  }, {});
-
   const checkedCount = activeList.items.filter(i => i.checked).length;
   const totalCount = activeList.items.length;
+
+  const renderItem = (item) => (
+    <div key={item.id} className="px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors">
+      <button
+        onClick={() => toggleCheck(item.id)}
+        className={`flex-shrink-0 w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
+          item.checked
+            ? 'bg-green-500 border-green-500'
+            : 'border-gray-600 hover:border-green-500'
+        }`}
+      >
+        {item.checked && <Check className="w-4 h-4 text-white" />}
+      </button>
+
+      <div className="flex-grow">
+        <div className="font-medium">{item.name}</div>
+        {item.quantity && (
+          <div className="text-sm text-gray-400">{item.quantity}</div>
+        )}
+      </div>
+
+      <div className="relative">
+        <button
+          onClick={() => setEditingCategoryId(editingCategoryId === item.id ? null : item.id)}
+          className={`text-xs px-2 py-1 rounded ${item.category ? 'text-green-400' : 'text-yellow-400'}`}
+        >
+          {item.category || 'Osorterat'}
+        </button>
+        {editingCategoryId === item.id && (
+          <div className="absolute right-0 top-full z-20 bg-gray-700 rounded-lg shadow-lg border border-gray-600 min-w-max">
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => {
+                  setActiveList(prev => ({
+                    ...prev,
+                    items: prev.items.map(i => i.id === item.id ? { ...i, category: cat } : i)
+                  }));
+                  setEditingCategoryId(null);
+                }}
+                className="w-full text-left px-4 py-2 hover:bg-gray-600 text-sm flex items-center gap-2"
+              >
+                <span className="w-4 inline-block">{item.category === cat ? '✓' : ''}</span>
+                {cat}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={() => deleteItem(item.id)}
+        className="flex-shrink-0 p-2 hover:bg-gray-600 rounded-lg transition-colors"
+      >
+        <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-400" />
+      </button>
+    </div>
+  );
 
   const formatDate = (isoString) => {
     const date = new Date(isoString);
@@ -699,9 +729,8 @@ const ShoppingListApp = () => {
       <div className="max-w-4xl mx-auto px-4 py-6">
         {activeTab === 'active' ? (
           <>
-            {/* Add Item Section - only in prep mode */}
-            {activeList.status === 'prep' && (
-              <div className="bg-gray-800 rounded-lg p-4 mb-6">
+            {/* Add Item Section */}
+            <div className="bg-gray-800 rounded-lg p-4 mb-6">
                 <div className="relative mb-3 bg-gray-700 rounded-lg">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                   {inlineSuggestion && searchTerm && (
@@ -767,7 +796,7 @@ const ShoppingListApp = () => {
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <input
                     type="text"
                     value={quantity}
@@ -775,17 +804,6 @@ const ShoppingListApp = () => {
                     placeholder="Antal (valfritt)"
                     className="bg-gray-700 text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
-                  
-                  <select
-                    value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="bg-gray-700 text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  >
-                    <option value="">Välj kategori</option>
-                    {categories.map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
 
                   <button
                     onClick={() => handleAddItem()}
@@ -795,49 +813,7 @@ const ShoppingListApp = () => {
                     Lägg till
                   </button>
                 </div>
-              </div>
-            )}
-
-            {/* Shopping Status */}
-            {totalCount > 0 && (
-              <div className="bg-gray-800 rounded-lg p-4 mb-6">
-                {activeList.status === 'prep' ? (
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <p className="text-sm text-gray-400">Redo att handla?</p>
-                      <p className="font-semibold">{totalCount} varor i listan</p>
-                    </div>
-                    <button
-                      onClick={startShopping}
-                      className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors flex items-center gap-2"
-                    >
-                      <ShoppingCart className="w-5 h-5" />
-                      Starta shopping
-                    </button>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-sm text-gray-400">
-                        🛒 Shopping pågår... {checkedCount} av {totalCount} klarade
-                      </span>
-                      <button
-                        onClick={completeShopping}
-                        className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors text-sm"
-                      >
-                        ✓ Klar med shopping
-                      </button>
-                    </div>
-                    <div className="w-full bg-gray-700 rounded-full h-2">
-                      <div
-                        className="bg-green-500 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${totalCount > 0 ? (checkedCount / totalCount) * 100 : 0}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            </div>
 
             {/* Shopping List */}
             {totalCount === 0 ? (
@@ -846,63 +822,57 @@ const ShoppingListApp = () => {
                 <p>Din inköpslista är tom</p>
                 <p className="text-sm mt-2">Börja lägga till varor ovan</p>
               </div>
-            ) : displayItems.length === 0 ? (
-              <div className="text-center py-12 text-gray-500">
-                <Check className="w-16 h-16 mx-auto mb-4 text-green-500" />
-                <p className="text-xl font-semibold text-white">Allt klart! 🎉</p>
-                <p className="text-sm mt-2">Du har bockat av alla varor</p>
-                <button
-                  onClick={completeShopping}
-                  className="mt-4 bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors"
-                >
-                  Avsluta shopping
-                </button>
-              </div>
             ) : (
-              <div className="space-y-4">
-                {Object.entries(displayItemsByCategory).map(([category, categoryItems]) => (
-                  <div key={category} className="bg-gray-800 rounded-lg overflow-hidden">
-                    <div className="bg-gray-750 px-4 py-2 font-semibold text-green-500 border-b border-gray-700">
-                      {category} ({categoryItems.length})
-                    </div>
-                    <div className="divide-y divide-gray-700">
-                      {categoryItems.map(item => (
-                        <div
-                          key={item.id}
-                          className="px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors"
-                        >
-                          <button
-                            onClick={() => toggleCheck(item.id)}
-                            className={`flex-shrink-0 w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
-                              item.checked
-                                ? 'bg-green-500 border-green-500'
-                                : 'border-gray-600 hover:border-green-500'
-                            }`}
-                          >
-                            {item.checked && <Check className="w-4 h-4 text-white" />}
-                          </button>
-                          
-                          <div className="flex-grow">
-                            <div className="font-medium">{item.name}</div>
-                            {item.quantity && (
-                              <div className="text-sm text-gray-400">{item.quantity}</div>
-                            )}
-                          </div>
-
-                          {activeList.status === 'prep' && (
-                            <button
-                              onClick={() => deleteItem(item.id)}
-                              className="flex-shrink-0 p-2 hover:bg-gray-600 rounded-lg transition-colors"
-                            >
-                              <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-400" />
-                            </button>
-                          )}
+              <>
+                {editingCategoryId && (
+                  <div className="fixed inset-0 z-10" onClick={() => setEditingCategoryId(null)} />
+                )}
+                <div className="space-y-4">
+                  {/* Osorterat section */}
+                  {(() => {
+                    const unsortedItems = activeList.items.filter(i => !i.checked && !i.category);
+                    if (unsortedItems.length === 0) return null;
+                    return (
+                      <div className="bg-gray-800 rounded-lg overflow-hidden">
+                        <div className="bg-gray-750 px-4 py-2 font-semibold text-yellow-400 border-b border-gray-700">
+                          Osorterat ({unsortedItems.length})
                         </div>
-                      ))}
+                        <div className="divide-y divide-gray-700">
+                          {unsortedItems.map(item => renderItem(item))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Category sections in defined order */}
+                  {categories.map(cat => {
+                    const catItems = activeList.items.filter(i => !i.checked && i.category === cat);
+                    if (catItems.length === 0) return null;
+                    return (
+                      <div key={cat} className="bg-gray-800 rounded-lg overflow-hidden">
+                        <div className="bg-gray-750 px-4 py-2 font-semibold text-green-500 border-b border-gray-700">
+                          {cat} ({catItems.length})
+                        </div>
+                        <div className="divide-y divide-gray-700">
+                          {catItems.map(item => renderItem(item))}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Klart section */}
+                  {checkedCount > 0 && (
+                    <div className="bg-gray-800 rounded-lg overflow-hidden">
+                      <div className="bg-gray-750 px-4 py-2 font-semibold text-gray-400 border-b border-gray-700">
+                        Klart ✓ ({checkedCount})
+                      </div>
+                      <div className="divide-y divide-gray-700">
+                        {activeList.items.filter(i => i.checked).map(item => renderItem(item))}
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  )}
+                </div>
+              </>
             )}
           </>
         ) : (
