@@ -315,7 +315,7 @@ const ShoppingListApp = () => {
   const [dropdownPosition, setDropdownPosition] = useState(null);
   const dropdownRef = useRef(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [linkCopied, setLinkCopied] = useState(false);
+  const qrRef = useRef(null);
   const [inkopList, setInkopList] = useState({ id: Date.now(), items: [] });
   const inkopLoaded = useRef(false);
   const isInkopRemoteUpdate = useRef(false);
@@ -590,6 +590,15 @@ const ShoppingListApp = () => {
     document.addEventListener('mousedown', handleMouseDown);
     return () => document.removeEventListener('mousedown', handleMouseDown);
   }, [editingCategoryId, dropdownPosition]);
+
+  useEffect(() => {
+    if (!showInviteModal || !listId || !qrRef.current) return;
+    const url = `https://christianbjornegren-prog.github.io/Shopping/?join=${listId}`;
+    new window.QRCode(qrRef.current, { text: url, width: 200, height: 200 });
+    return () => {
+      if (qrRef.current) qrRef.current.innerHTML = '';
+    };
+  }, [showInviteModal, listId]);
 
   const checkedCount = activeList.items.filter(i => i.checked).length;
   const totalCount = activeList.items.length;
@@ -1042,7 +1051,7 @@ const ShoppingListApp = () => {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">Dela listan</h3>
+              <h3 className="text-xl font-bold">Scanna för att gå med</h3>
               <button
                 onClick={() => setShowInviteModal(false)}
                 className="p-1 hover:bg-gray-700 rounded"
@@ -1050,32 +1059,10 @@ const ShoppingListApp = () => {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <button
-              onClick={async () => {
-                const url = `https://christianbjornegren-prog.github.io/Shopping/?join=${listId}`;
-                if (navigator.share) {
-                  try {
-                    await navigator.share({ title: 'CHRELIN', text: 'Gå med i vår inköpslista!', url });
-                  } catch (e) {
-                    if (e.name !== 'AbortError') {
-                      await navigator.clipboard.writeText(url);
-                      setLinkCopied(true);
-                      setTimeout(() => setLinkCopied(false), 3000);
-                    }
-                  }
-                } else {
-                  await navigator.clipboard.writeText(url);
-                  setLinkCopied(true);
-                  setTimeout(() => setLinkCopied(false), 3000);
-                }
-              }}
-              className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg transition-colors font-semibold mb-3"
-            >
-              Skicka inbjudan
-            </button>
-            {linkCopied && (
-              <p className="text-center text-green-400 text-sm">Länk kopierad!</p>
-            )}
+            <div className="flex justify-center mb-3">
+              <div ref={qrRef} className="bg-white p-2 rounded" />
+            </div>
+            <p className="text-center text-gray-400 text-sm mb-4">Scanna med kameran – öppnas direkt i Safari</p>
             <button
               onClick={() => setShowInviteModal(false)}
               className="w-full bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-lg transition-colors"
