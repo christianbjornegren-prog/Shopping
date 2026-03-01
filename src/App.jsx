@@ -2,7 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp } from 'lucide-react';import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
-import { collection, doc, onSnapshot, setDoc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
 // Normalize text: remove accents, lowercase
@@ -231,7 +231,17 @@ const ShoppingListApp = () => {
     }
     const userRef = doc(db, 'users', user.uid);
     const setup = async () => {
+      const joinParam = new URLSearchParams(window.location.search).get('join');
       const userDoc = await getDoc(userRef);
+      if (joinParam) {
+        const joinListDoc = await getDoc(doc(db, 'lists', joinParam));
+        if (joinListDoc.exists()) {
+          await setDoc(userRef, { listId: joinParam, email: user.email });
+          setListId(joinParam);
+          window.history.replaceState({}, '', window.location.pathname);
+          return;
+        }
+      }
       if (userDoc.exists() && userDoc.data().listId) {
         setListId(userDoc.data().listId);
       } else {
@@ -301,11 +311,11 @@ const ShoppingListApp = () => {
   const inputRef = useRef(null);
   const [editingCategoryId, setEditingCategoryId] = useState(null);
   const [checkedExpanded, setCheckedExpanded] = useState(false);
-  const [inkopCheckedExpanded, setInkopCheckedExpanded] = useState(false);
+  const [checkedExpandedShopping, setCheckedExpandedShopping] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState(null);
   const dropdownRef = useRef(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
+  const [linkCopied, setLinkCopied] = useState(false);
   const [inkopList, setInkopList] = useState({ id: Date.now(), items: [] });
   const inkopLoaded = useRef(false);
   const isInkopRemoteUpdate = useRef(false);
@@ -534,27 +544,6 @@ const ShoppingListApp = () => {
       setUserProductHistory({});
     } catch (error) {
       console.error('Logout error:', error);
-    }
-  };
-
-  const handleJoinList = async () => {
-    const joinCode = inviteEmail.trim();
-    if (!joinCode || !user) return;
-    try {
-      const sharedListRef = doc(db, 'lists', joinCode);
-      const sharedListDoc = await getDoc(sharedListRef);
-      if (!sharedListDoc.exists()) {
-        alert('Hittade ingen lista med den koden. Kontrollera koden och försök igen.');
-        return;
-      }
-      await updateDoc(sharedListRef, { members: arrayUnion(user.uid) });
-      await setDoc(doc(db, 'users', user.uid), { listId: joinCode, email: user.email });
-      setListId(joinCode);
-      setInviteEmail('');
-      setShowInviteModal(false);
-    } catch (error) {
-      console.error('Error joining list:', error);
-      alert('Kunde inte gå med i listan: ' + error.message);
     }
   };
 
@@ -997,7 +986,7 @@ const ShoppingListApp = () => {
                 {inkopList.items.filter(i => !i.checked).length > 0 && (
                   <div className="bg-gray-800 rounded-lg overflow-hidden">
                     <div className="divide-y divide-gray-700">
-                      {inkopList.items.filter(i => !i.checked).map(item => (
+                      {[...inkopList.items.filter(i => !i.checked)].sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt)).map(item => (
                         <div key={item.id} className="px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors">
                           <button
                             onClick={() => toggleInkopCheck(item.id)}
@@ -1019,13 +1008,13 @@ const ShoppingListApp = () => {
                 {inkopList.items.filter(i => i.checked).length > 0 && (
                   <div className="bg-gray-800 rounded-lg overflow-hidden">
                     <button
-                      onClick={() => setInkopCheckedExpanded(prev => !prev)}
+                      onClick={() => setCheckedExpandedShopping(prev => !prev)}
                       className="w-full px-4 py-3 flex items-center justify-between text-gray-400 hover:bg-gray-700 transition-colors"
                     >
                       <span>{inkopList.items.filter(i => i.checked).length} köpta varor</span>
-                      {inkopCheckedExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      {checkedExpandedShopping ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                     </button>
-                    {inkopCheckedExpanded && (
+                    {checkedExpandedShopping && (
                       <div className="divide-y divide-gray-700 border-t border-gray-700">
                         {inkopList.items.filter(i => i.checked).map(item => (
                           <div key={item.id} className="px-4 py-3 flex items-center gap-3">
@@ -1061,44 +1050,38 @@ const ShoppingListApp = () => {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <p className="text-gray-400 mb-2">Din lista-kod (dela med din partner):</p>
-            <div className="flex gap-2 mb-6">
-              <input
-                readOnly
-                value={listId || ''}
-                onClick={(e) => e.target.select()}
-                className="flex-1 bg-gray-700 text-white px-4 py-2 rounded-lg font-mono text-sm select-all"
-              />
-              <button
-                onClick={() => navigator.clipboard.writeText(listId || '')}
-                className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors text-sm"
-              >
-                Kopiera
-              </button>
-            </div>
-            <p className="text-gray-400 mb-2">Gå med i en annans lista:</p>
-            <input
-              type="text"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              placeholder="Ange lista-kod"
-              className="w-full bg-gray-700 text-white px-4 py-2 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500"
-              onKeyDown={(e) => e.key === 'Enter' && handleJoinList()}
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowInviteModal(false)}
-                className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-lg transition-colors"
-              >
-                Avbryt
-              </button>
-              <button
-                onClick={handleJoinList}
-                className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded-lg transition-colors"
-              >
-                Gå med i lista
-              </button>
-            </div>
+            <button
+              onClick={async () => {
+                const url = `https://christianbjornegren-prog.github.io/Shopping/?join=${listId}`;
+                if (navigator.share) {
+                  try {
+                    await navigator.share({ title: 'CHRELIN', text: 'Gå med i vår inköpslista!', url });
+                  } catch (e) {
+                    if (e.name !== 'AbortError') {
+                      await navigator.clipboard.writeText(url);
+                      setLinkCopied(true);
+                      setTimeout(() => setLinkCopied(false), 3000);
+                    }
+                  }
+                } else {
+                  await navigator.clipboard.writeText(url);
+                  setLinkCopied(true);
+                  setTimeout(() => setLinkCopied(false), 3000);
+                }
+              }}
+              className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg transition-colors font-semibold mb-3"
+            >
+              Skicka inbjudan
+            </button>
+            {linkCopied && (
+              <p className="text-center text-green-400 text-sm">Länk kopierad!</p>
+            )}
+            <button
+              onClick={() => setShowInviteModal(false)}
+              className="w-full bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-lg transition-colors"
+            >
+              Stäng
+            </button>
           </div>
         </div>
       )}
