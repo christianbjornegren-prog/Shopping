@@ -310,6 +310,7 @@ const ShoppingListApp = () => {
   const [inlineSuggestion, setInlineSuggestion] = useState(null);
   const inputRef = useRef(null);
   const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [fadingIds, setFadingIds] = useState([]);
   const [checkedExpanded, setCheckedExpanded] = useState(false);
   const [checkedExpandedShopping, setCheckedExpandedShopping] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState(null);
@@ -422,7 +423,7 @@ const ShoppingListApp = () => {
   const persistHistory = (history) => {
     if (user) {
       const ref = doc(db, 'users', user.uid, 'productHistory', 'data');
-      setDoc(ref, history).catch(err => console.error('Error saving history:', err));
+      setDoc(ref, history, { merge: true }).catch(err => console.error('Error saving history:', err));
     }
   };
 
@@ -495,12 +496,22 @@ const ShoppingListApp = () => {
   };
 
   const toggleCheck = (id) => {
-    setActiveList(prev => ({
-      ...prev,
-      items: prev.items.map(item => 
-        item.id === id ? { ...item, checked: !item.checked } : item
-      )
-    }));
+    const item = activeList.items.find(i => i.id === id);
+    if (item && !item.checked) {
+      setFadingIds(prev => [...prev, id]);
+      setTimeout(() => {
+        setActiveList(prev => ({
+          ...prev,
+          items: prev.items.map(i => i.id === id ? { ...i, checked: true } : i)
+        }));
+        setFadingIds(prev => prev.filter(fid => fid !== id));
+      }, 300);
+    } else {
+      setActiveList(prev => ({
+        ...prev,
+        items: prev.items.map(i => i.id === id ? { ...i, checked: !i.checked } : i)
+      }));
+    }
   };
 
   const deleteItem = (id) => {
@@ -604,7 +615,7 @@ const ShoppingListApp = () => {
   const totalCount = activeList.items.length;
 
   const renderItem = (item) => (
-    <div key={item.id} className="px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors">
+    <div key={item.id} className={`px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
       <button
         onClick={() => toggleCheck(item.id)}
         className={`flex-shrink-0 w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
@@ -743,7 +754,7 @@ const ShoppingListApp = () => {
                   : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >
-              Matvaror ({totalCount})
+              Matvaror ({totalCount - checkedCount})
             </button>
             <button
               onClick={() => setActiveTab('inkop')}
