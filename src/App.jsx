@@ -830,9 +830,6 @@ const ShoppingListApp = () => {
                         >
                           <div>
                             <span className="font-medium">{suggestion.name}</span>
-                            {suggestion.count > 0 && (
-                              <span className="text-xs text-gray-400 ml-2">({suggestion.count}×)</span>
-                            )}
                           </div>
                           <span className="text-sm text-green-400">{suggestion.category}</span>
                         </button>
@@ -977,9 +974,6 @@ const ShoppingListApp = () => {
                         className="w-full px-4 py-3 text-left hover:bg-gray-600 flex items-center border-b border-gray-600 last:border-b-0"
                       >
                         <span className="font-medium">{suggestion.name}</span>
-                        {suggestion.count > 0 && (
-                          <span className="text-xs text-gray-400 ml-2">({suggestion.count}×)</span>
-                        )}
                       </button>
                     ))}
                   </div>
