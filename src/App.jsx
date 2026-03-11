@@ -421,8 +421,8 @@ const ShoppingListApp = () => {
   };
 
   const persistHistory = (history) => {
-    if (user) {
-      const ref = doc(db, 'users', user.uid, 'productHistory', 'data');
+    if (user && listId) {
+      const ref = doc(db, 'lists', listId, 'productHistory', 'data');
       setDoc(ref, history, { merge: true }).catch(err => console.error('Error saving history:', err));
     }
   };
@@ -558,14 +558,14 @@ const ShoppingListApp = () => {
     }
   };
 
-  // Load product history from Firestore on login
+  // Load product history from Firestore when listId is available
   useEffect(() => {
-    if (!user) { setUserProductHistory({}); return; }
-    const ref = doc(db, 'users', user.uid, 'productHistory', 'data');
+    if (!user || !listId) { setUserProductHistory({}); return; }
+    const ref = doc(db, 'lists', listId, 'productHistory', 'data');
     getDoc(ref).then(snap => {
       if (snap.exists()) setUserProductHistory(snap.data());
     }).catch(err => console.error('Error loading history:', err));
-  }, [user]);
+  }, [user, listId]);
 
   // Subscribe to inköp list
   useEffect(() => {
