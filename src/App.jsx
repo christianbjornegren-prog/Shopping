@@ -11,7 +11,8 @@ import {
   categories,
   categoryMeta,
   findProductCategory,
-  getFavorites
+  getFavorites,
+  getItemEmoji
 } from './categorization';
 
 
@@ -429,6 +430,10 @@ const ShoppingListApp = () => {
         {item.checked && <Check className="w-4 h-4 text-white" />}
       </button>
 
+      <span className="flex-shrink-0 text-lg leading-none w-6 text-center" aria-hidden="true">
+        {getItemEmoji(item.name, item.category)}
+      </span>
+
       <div className="flex-grow min-w-0">
         <div className="font-medium truncate">{item.name}</div>
       </div>
@@ -448,7 +453,6 @@ const ShoppingListApp = () => {
               : 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/20'
           }`}
         >
-          <span className="mr-1">{(categoryMeta[item.category] || categoryMeta['Osorterat']).emoji}</span>
           {item.category || 'Osorterat'}
         </button>
         <select
@@ -637,9 +641,11 @@ const ShoppingListApp = () => {
                           onClick={() => handleAddItem(suggestion.name, suggestion.category)}
                           className="w-full px-4 py-3 text-left hover:bg-gray-700 flex justify-between items-center border-b border-gray-700 last:border-b-0"
                         >
-                          <span className="font-medium">{suggestion.name}</span>
-                          <span className="text-xs text-gray-400 flex items-center gap-1">
-                            <span>{(categoryMeta[suggestion.category] || categoryMeta['Osorterat']).emoji}</span>
+                          <span className="font-medium flex items-center gap-2">
+                            <span aria-hidden="true">{getItemEmoji(suggestion.name, suggestion.category)}</span>
+                            {suggestion.name}
+                          </span>
+                          <span className="text-xs text-gray-400">
                             {suggestion.category || 'Osorterat'}
                           </span>
                         </button>
@@ -668,7 +674,7 @@ const ShoppingListApp = () => {
                       onClick={() => handleAddItem(fav.name, fav.category)}
                       className="flex-shrink-0 flex items-center gap-1.5 bg-gray-800 border border-gray-750 hover:border-green-500 hover:bg-gray-750 text-sm text-gray-200 pl-3 pr-3 py-2 rounded-full transition-colors"
                     >
-                      <span>{(categoryMeta[fav.category] || categoryMeta['Osorterat']).emoji}</span>
+                      <span aria-hidden="true">{getItemEmoji(fav.name, fav.category)}</span>
                       <span className="whitespace-nowrap">{fav.name}</span>
                       <Plus className="w-3.5 h-3.5 text-green-400" />
                     </button>
