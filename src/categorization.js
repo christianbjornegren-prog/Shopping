@@ -300,3 +300,90 @@ export const getFavorites = (history, currentItems = [], limit = 8) => {
     .sort((a, b) => b.count - a.count)
     .slice(0, limit);
 };
+
+// ---------------------------------------------------------------------------
+// Analytics helpers (pure) – power the "Statistik" tab fun-facts.
+// All functions take the raw item arrays (activeList.items + inkopList.items)
+// and reduce them into chart-ready aggregates. No React/Firebase deps so they
+// stay unit-testable with Vitest.
+// ---------------------------------------------------------------------------
+
+// Monday-first Swedish weekday labels.
+export const WEEKDAY_LABELS = ['Mån', 'Tis', 'Ons', 'Tor', 'Fre', 'Lör', 'Sön'];
+
+// JS getDay(): 0=Sun..6=Sat -> Monday-first index (Mon=0 .. Sun=6).
+const mondayFirstIndex = (date) => (date.getDay() + 6) % 7;
+
+// Count items per hour-of-day (0–23) for a given timestamp field.
+const bucketByHour = (items, field) => {
+  const buckets = Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 }));
+  (items || []).forEach(item => {
+    const ts = item?.[field];
+    if (!ts) return;
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return;
+    buckets[d.getHours()].count += 1;
+  });
+  return buckets;
+};
+
+// Count items per weekday (Monday-first) for a given timestamp field.
+const bucketByWeekday = (items, field) => {
+  const buckets = WEEKDAY_LABELS.map(label => ({ label, count: 0 }));
+  (items || []).forEach(item => {
+    const ts = item?.[field];
+    if (!ts) return;
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return;
+    buckets[mondayFirstIndex(d)].count += 1;
+  });
+  return buckets;
+};
+
+export const addsByHour = (items) => bucketByHour(items, 'addedAt');
+export const addsByWeekday = (items) => bucketByWeekday(items, 'addedAt');
+export const checksByHour = (items) => bucketByHour(items, 'checkedAt');
+export const checksByWeekday = (items) => bucketByWeekday(items, 'checkedAt');
+
+// Per-person tally: how many items each user added vs checked off.
+export const byPerson = (items) => {
+  const out = {};
+  (items || []).forEach(item => {
+    const who = item?.addedBy || 'Okänd';
+    if (!out[who]) out[who] = { added: 0, checked: 0 };
+    if (item?.addedAt) out[who].added += 1;
+    if (item?.checkedAt) out[who].checked += 1;
+  });
+  return out;
+};
+
+// Category distribution across items (empty category -> 'Övrigt').
+export const byCategory = (items) => {
+  const out = {};
+  (items || []).forEach(item => {
+    const cat = (item?.category && item.category.trim()) ? item.category : 'Övrigt';
+    out[cat] = (out[cat] || 0) + 1;
+  });
+  return out;
+};
+
+// Most-added products from the persisted purchase history, most first.
+export const topProducts = (history, limit = 10) => {
+  return Object.entries(history || {})
+    .map(([name, data]) => ({
+      name,
+      category: data?.category || '',
+      count: data?.count || 0
+    }))
+    .filter(p => p.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+};
+
+// Turn an email into a friendly display name: part before "@", capitalised.
+export const displayName = (email) => {
+  if (!email || typeof email !== 'string') return 'Okänd';
+  const local = email.split('@')[0];
+  if (!local) return 'Okänd';
+  return local.charAt(0).toUpperCase() + local.slice(1);
+};

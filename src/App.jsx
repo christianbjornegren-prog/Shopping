@@ -1,6 +1,17 @@
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp } from 'lucide-react';
+import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Cell,
+  PieChart,
+  Pie
+} from 'recharts';
 import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
@@ -12,9 +23,250 @@ import {
   categoryMeta,
   findProductCategory,
   getFavorites,
-  getItemEmoji
+  getItemEmoji,
+  addsByHour,
+  addsByWeekday,
+  checksByHour,
+  checksByWeekday,
+  byPerson,
+  byCategory,
+  topProducts,
+  displayName
 } from './categorization';
 
+// ===========================================================================
+// Statistik-fliken: funfacts om köpbeteende, ritade med Recharts. Komponenten
+// monteras om varje gång man går in i fliken, så graferna animeras fram (växer
+// från noll) vid varje besök. All aggregering sker via rena helpers i
+// categorization.js.
+// ===========================================================================
+
+const ADD_COLOR = '#22c55e';   // grön – tillagda varor
+const CHECK_COLOR = '#38bdf8'; // sky – avbockade varor
+const PIE_COLORS = ['#84cc16', '#38bdf8', '#f43f5e', '#f59e0b', '#fb923c', '#22d3ee', '#2dd4bf', '#e879f9', '#818cf8', '#9ca3af'];
+
+const TIME_BLOCKS = [
+  { label: '🌙 Natt', from: 0, to: 6 },
+  { label: '🌅 Morgon', from: 6, to: 12 },
+  { label: '☀️ Dag', from: 12, to: 18 },
+  { label: '🌆 Kväll', from: 18, to: 24 },
+];
+
+const sumRange = (hourBuckets, from, to) =>
+  hourBuckets.slice(from, to).reduce((s, b) => s + b.count, 0);
+
+const tooltipStyle = {
+  background: '#1b202a',
+  border: '1px solid #2a303c',
+  borderRadius: 12,
+  color: '#fff',
+  fontSize: 13,
+};
+
+const axisTick = { fill: '#9aa4b2', fontSize: 12 };
+
+// Animated count-up for the headline numbers (easeOutCubic).
+const CountUp = ({ value, duration = 900 }) => {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    let raf;
+    const start = performance.now();
+    const tick = (now) => {
+      const p = Math.min(1, (now - start) / duration);
+      setN(Math.round(value * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration]);
+  return <>{n}</>;
+};
+
+const StatCard = ({ title, icon: Icon, hint, children }) => (
+  <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-4 mb-5">
+    <div className="flex items-center gap-2 mb-1 text-gray-100 font-semibold">
+      {Icon && <Icon className="w-4 h-4 text-green-400" />}
+      {title}
+    </div>
+    {hint && <p className="text-xs text-gray-500 mb-3">{hint}</p>}
+    <div className={hint ? '' : 'mt-3'}>{children}</div>
+  </div>
+);
+
+const SeriesLegend = ({ showChecks }) => (
+  <div className="flex items-center gap-4 mb-3 text-xs text-gray-400">
+    <span className="flex items-center gap-1.5">
+      <span className="w-3 h-3 rounded-sm" style={{ background: ADD_COLOR }} /> Tillagda
+    </span>
+    {showChecks && (
+      <span className="flex items-center gap-1.5">
+        <span className="w-3 h-3 rounded-sm" style={{ background: CHECK_COLOR }} /> Avbockade
+      </span>
+    )}
+  </div>
+);
+
+const StatsView = ({ items, history }) => {
+  const addH = addsByHour(items);
+  const chkH = checksByHour(items);
+  const addW = addsByWeekday(items);
+  const chkW = checksByWeekday(items);
+
+  const totalAdded = items.filter(i => i.addedAt).length;
+  const totalChecked = items.filter(i => i.checkedAt).length;
+  const hasChecks = totalChecked > 0;
+
+  const timeData = TIME_BLOCKS.map(b => ({
+    name: b.label,
+    Tillagda: sumRange(addH, b.from, b.to),
+    Avbockade: sumRange(chkH, b.from, b.to),
+  }));
+
+  const weekData = addW.map((b, i) => ({
+    name: b.label,
+    Tillagda: b.count,
+    Avbockade: chkW[i].count,
+  }));
+
+  const personData = Object.entries(byPerson(items))
+    .map(([email, v]) => ({ name: displayName(email), Tillagda: v.added, Avbockade: v.checked }))
+    .sort((a, b) => b.Tillagda - a.Tillagda);
+
+  const catData = Object.entries(byCategory(items))
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+
+  const top = topProducts(history, 10).map(p => ({ name: p.name, count: p.count }));
+
+  const hasData = totalAdded > 0 || top.length > 0;
+
+  if (!hasData) {
+    return (
+      <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-10 text-center">
+        <BarChart3 className="w-10 h-10 text-gray-600 mx-auto mb-4" />
+        <p className="text-gray-300 font-semibold mb-1">Ingen data än</p>
+        <p className="text-gray-500 text-sm">Lägg till varor i listan så fylls statistiken på med kul fakta! 📊</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Headline-siffror med count-up */}
+      <div className="grid grid-cols-2 gap-4 mb-5">
+        <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-4">
+          <div className="text-3xl font-extrabold text-green-400"><CountUp value={totalAdded} /></div>
+          <div className="text-sm text-gray-400 mt-1">varor tillagda</div>
+        </div>
+        <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-4">
+          <div className="text-3xl font-extrabold text-sky-400"><CountUp value={totalChecked} /></div>
+          <div className="text-sm text-gray-400 mt-1">varor avbockade</div>
+        </div>
+      </div>
+
+      {!hasChecks && (
+        <p className="text-xs text-gray-500 mb-5 -mt-2 text-center">
+          🔜 Avbockningsdata börjar samlas in från och med nu – handla på så fylls de blå staplarna i!
+        </p>
+      )}
+
+      {/* Tid på dygnet */}
+      <StatCard title="När på dygnet?" icon={Clock} hint="När lägger ni till (och bockar av) varor?">
+        <SeriesLegend showChecks={hasChecks} />
+        <div style={{ width: '100%', height: 220 }}>
+          <ResponsiveContainer>
+            <BarChart data={timeData} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
+              <XAxis dataKey="name" tick={axisTick} axisLine={false} tickLine={false} />
+              <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} width={28} />
+              <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
+              <Bar dataKey="Tillagda" fill={ADD_COLOR} radius={[6, 6, 0, 0]} animationDuration={900} />
+              {hasChecks && <Bar dataKey="Avbockade" fill={CHECK_COLOR} radius={[6, 6, 0, 0]} animationDuration={900} animationBegin={150} />}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </StatCard>
+
+      {/* Veckodagar */}
+      <StatCard title="Vilka veckodagar?" icon={TrendingUp} hint="Måndag först – er mest aktiva handledag sticker ut.">
+        <SeriesLegend showChecks={hasChecks} />
+        <div style={{ width: '100%', height: 220 }}>
+          <ResponsiveContainer>
+            <BarChart data={weekData} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
+              <XAxis dataKey="name" tick={axisTick} axisLine={false} tickLine={false} />
+              <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} width={28} />
+              <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
+              <Bar dataKey="Tillagda" fill={ADD_COLOR} radius={[6, 6, 0, 0]} animationDuration={900} />
+              {hasChecks && <Bar dataKey="Avbockade" fill={CHECK_COLOR} radius={[6, 6, 0, 0]} animationDuration={900} animationBegin={150} />}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </StatCard>
+
+      {/* Per person */}
+      {personData.length > 0 && (
+        <StatCard title="Vem gör vad?" icon={Users} hint="Fördelning per person – vem lägger till mest?">
+          <SeriesLegend showChecks={hasChecks} />
+          <div style={{ width: '100%', height: Math.max(140, personData.length * 70) }}>
+            <ResponsiveContainer>
+              <BarChart data={personData} layout="vertical" margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
+                <XAxis type="number" allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="name" tick={axisTick} axisLine={false} tickLine={false} width={70} />
+                <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
+                <Bar dataKey="Tillagda" fill={ADD_COLOR} radius={[0, 6, 6, 0]} animationDuration={900} />
+                {hasChecks && <Bar dataKey="Avbockade" fill={CHECK_COLOR} radius={[0, 6, 6, 0]} animationDuration={900} animationBegin={150} />}
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </StatCard>
+      )}
+
+      {/* Topplista varor */}
+      {top.length > 0 && (
+        <StatCard title="Mest tillagda varor" icon={TrendingUp} hint="Era favoriter genom tiderna.">
+          <div style={{ width: '100%', height: Math.max(160, top.length * 32) }}>
+            <ResponsiveContainer>
+              <BarChart data={top} layout="vertical" margin={{ top: 0, right: 12, bottom: 0, left: 8 }}>
+                <XAxis type="number" allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="name" tick={axisTick} axisLine={false} tickLine={false} width={90} />
+                <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
+                <Bar dataKey="count" name="Antal" fill={ADD_COLOR} radius={[0, 6, 6, 0]} animationDuration={1000}>
+                  {top.map((entry, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </StatCard>
+      )}
+
+      {/* Kategorifördelning */}
+      {catData.length > 0 && (
+        <StatCard title="Kategorifördelning" icon={BarChart3} hint="Vad fyller vagnen mest?">
+          <div className="flex flex-col sm:flex-row items-center gap-4">
+            <div style={{ width: 180, height: 180 }} className="flex-shrink-0">
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie data={catData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={75} paddingAngle={2} animationDuration={900}>
+                    {catData.map((entry, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} stroke="#1b202a" />)}
+                  </Pie>
+                  <Tooltip contentStyle={tooltipStyle} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="flex-grow w-full grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+              {catData.map((entry, i) => (
+                <div key={entry.name} className="flex items-center gap-2 text-gray-300">
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                  <span className="truncate">{entry.name}</span>
+                  <span className="ml-auto text-gray-500">{entry.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </StatCard>
+      )}
+    </div>
+  );
+};
 
 const ShoppingListApp = () => {
   const [user, setUser] = useState(null);
@@ -304,7 +556,7 @@ const ShoppingListApp = () => {
       setTimeout(() => {
         setActiveList(prev => ({
           ...prev,
-          items: prev.items.map(i => i.id === id ? { ...i, checked: true } : i)
+          items: prev.items.map(i => i.id === id ? { ...i, checked: true, checkedAt: new Date().toISOString() } : i)
         }));
         setFadingIds(prev => prev.filter(fid => fid !== id));
       }, 300);
@@ -326,7 +578,9 @@ const ShoppingListApp = () => {
   const toggleInkopCheck = (id) => {
     setInkopList(prev => ({
       ...prev,
-      items: prev.items.map(item => item.id === id ? { ...item, checked: !item.checked } : item)
+      items: prev.items.map(item => item.id === id
+        ? { ...item, checked: !item.checked, checkedAt: !item.checked ? new Date().toISOString() : item.checkedAt }
+        : item)
     }));
   };
 
@@ -415,6 +669,13 @@ const ShoppingListApp = () => {
 
   const checkedCount = activeList.items.filter(i => i.checked).length;
   const totalCount = activeList.items.length;
+
+  // Combined dataset for the Statistik tab: every item ever recorded across
+  // both lists carries addedAt/addedBy/category (and checkedAt going forward).
+  const statsItems = useMemo(
+    () => [...(activeList.items || []), ...(inkopList.items || [])],
+    [activeList.items, inkopList.items]
+  );
 
   const renderItem = (item) => (
     <div key={item.id} className={`group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
@@ -580,13 +841,26 @@ const ShoppingListApp = () => {
             >
               Inköp
             </button>
+            <button
+              onClick={() => setActiveTab('statistik')}
+              className={`flex-1 py-2 px-4 font-semibold text-sm rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
+                activeTab === 'statistik'
+                  ? 'bg-green-600 text-white shadow'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <BarChart3 className="w-4 h-4" />
+              Statistik
+            </button>
           </div>
         </div>
       </div>
 
       {/* Main Content */}
       <div className="max-w-4xl mx-auto px-4 py-6">
-        {activeTab === 'active' ? (
+        {activeTab === 'statistik' ? (
+          <StatsView items={statsItems} history={userProductHistory} />
+        ) : activeTab === 'active' ? (
           <>
             {/* Add Item Section */}
             <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-4 mb-5">
