@@ -357,11 +357,13 @@ export const byPerson = (items) => {
   return out;
 };
 
-// Category distribution across items (empty category -> 'Övrigt').
+// Category distribution across items. Items without a real category
+// (e.g. quick "Inköp" items) are skipped so they don't drown the chart.
 export const byCategory = (items) => {
   const out = {};
   (items || []).forEach(item => {
-    const cat = (item?.category && item.category.trim()) ? item.category : 'Övrigt';
+    const cat = item?.category && item.category.trim();
+    if (!cat) return;
     out[cat] = (out[cat] || 0) + 1;
   });
   return out;
@@ -380,10 +382,12 @@ export const topProducts = (history, limit = 10) => {
     .slice(0, limit);
 };
 
-// Turn an email into a friendly display name: part before "@", capitalised.
+// Turn an email into a short friendly first name: the first token before
+// "@" or any . _ - separator, capitalised. Keeps axis labels short so they
+// don't get clipped (e.g. "christian.bjornegren@x" -> "Christian").
 export const displayName = (email) => {
   if (!email || typeof email !== 'string') return 'Okänd';
-  const local = email.split('@')[0];
-  if (!local) return 'Okänd';
-  return local.charAt(0).toUpperCase() + local.slice(1);
+  const first = email.split('@')[0].split(/[._-]/)[0];
+  if (!first) return 'Okänd';
+  return first.charAt(0).toUpperCase() + first.slice(1);
 };

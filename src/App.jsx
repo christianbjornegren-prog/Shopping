@@ -114,7 +114,7 @@ const SimpleBars = ({ data, color, empty }) => (
     <ResponsiveContainer>
       <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
         <XAxis dataKey="name" tick={axisTick} axisLine={false} tickLine={false} interval={0} />
-        <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} width={28} domain={[0, empty ? 1 : 'auto']} />
+        <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} width={36} domain={[0, empty ? 1 : 'auto']} />
         <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
         <Bar dataKey="value" fill={color} radius={[6, 6, 0, 0]} animationDuration={900} />
       </BarChart>
@@ -163,45 +163,39 @@ const StatsView = ({ items, history }) => {
 
   return (
     <div>
-      {/* Headline-siffror med count-up */}
-      <div className="grid grid-cols-2 gap-4 mb-5">
-        <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-4">
-          <div className="text-3xl font-extrabold text-green-400"><CountUp value={totalAdded} /></div>
-          <div className="text-sm text-gray-400 mt-1">varor tillagda</div>
-        </div>
-        <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-4">
-          <div className="text-3xl font-extrabold text-sky-400"><CountUp value={totalChecked} /></div>
-          <div className="text-sm text-gray-400 mt-1">varor avbockade</div>
-        </div>
+      {/* Headline – endast tillagda (avbockade är 1-1 mot tillagda) */}
+      <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-5 mb-5 text-center">
+        <div className="text-4xl font-extrabold text-green-400"><CountUp value={totalAdded} /></div>
+        <div className="text-sm text-gray-400 mt-1">varor tillagda totalt</div>
       </div>
 
       {/* --- TILLÄGG (grön): baseras på addedAt --- */}
-      <StatCard title="🛒 När lägger ni till varor?" icon={Clock} hint="Tid på dygnet då varor hamnar på listan.">
+      <StatCard title="🛒 När lägger ni till varor?" icon={Clock}>
         <SimpleBars data={timeAdd} color={ADD_COLOR} />
       </StatCard>
 
-      <StatCard title="🛒 Vilka dagar lägger ni till varor?" icon={TrendingUp} hint="Måndag först.">
+      <StatCard title="🛒 Vilka dagar lägger ni till varor?" icon={TrendingUp}>
         <SimpleBars data={weekAdd} color={ADD_COLOR} />
       </StatCard>
 
       {/* --- HANDLANDE (blå): baseras på checkedAt, tom tills data finns --- */}
-      <StatCard title="✅ När handlar ni?" icon={Clock} hint="Tid på dygnet då varor bockas av i butiken.">
+      <StatCard title="✅ När handlar ni?" icon={Clock}>
         <SimpleBars data={timeChk} color={CHECK_COLOR} empty={!hasChecks} />
         {!hasChecks && (
-          <p className="text-xs text-gray-500 text-center mt-2">🔜 Tom än – fylls på allt eftersom ni bockar av varor.</p>
+          <p className="text-xs text-gray-500 text-center mt-2">🔜 Fylls på när ni bockar av varor</p>
         )}
       </StatCard>
 
-      <StatCard title="✅ Vilka dagar handlar ni?" icon={TrendingUp} hint="Måndag först.">
+      <StatCard title="✅ Vilka dagar handlar ni?" icon={TrendingUp}>
         <SimpleBars data={weekChk} color={CHECK_COLOR} empty={!hasChecks} />
         {!hasChecks && (
-          <p className="text-xs text-gray-500 text-center mt-2">🔜 Tom än – fylls på allt eftersom ni bockar av varor.</p>
+          <p className="text-xs text-gray-500 text-center mt-2">🔜 Fylls på när ni bockar av varor</p>
         )}
       </StatCard>
 
       {/* Per person */}
       {personData.length > 0 && (
-        <StatCard title="Vem gör vad?" icon={Users} hint="Fördelning per person – vem lägger till mest?">
+        <StatCard title="Vem gör vad?" icon={Users}>
           <SeriesLegend showChecks={hasChecks} />
           <div style={{ width: '100%', height: Math.max(140, personData.length * 70) }}>
             <ResponsiveContainer>
@@ -219,7 +213,7 @@ const StatsView = ({ items, history }) => {
 
       {/* Topplista varor */}
       {top.length > 0 && (
-        <StatCard title="Mest tillagda varor" icon={TrendingUp} hint="Era favoriter genom tiderna.">
+        <StatCard title="Mest tillagda varor" icon={TrendingUp}>
           <div style={{ width: '100%', height: Math.max(160, top.length * 32) }}>
             <ResponsiveContainer>
               <BarChart data={top} layout="vertical" margin={{ top: 0, right: 12, bottom: 0, left: 8 }}>
@@ -237,7 +231,7 @@ const StatsView = ({ items, history }) => {
 
       {/* Kategorifördelning */}
       {catData.length > 0 && (
-        <StatCard title="Kategorifördelning" icon={BarChart3} hint="Vad fyller vagnen mest?">
+        <StatCard title="Kategorifördelning" icon={BarChart3}>
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: 180, height: 180 }} className="flex-shrink-0">
               <ResponsiveContainer>
@@ -560,7 +554,7 @@ const ShoppingListApp = () => {
     } else {
       setActiveList(prev => ({
         ...prev,
-        items: prev.items.map(i => i.id === id ? { ...i, checked: !i.checked } : i)
+        items: prev.items.map(i => i.id === id ? { ...i, checked: !i.checked, checkedAt: !i.checked ? new Date().toISOString() : null } : i)
       }));
     }
   };
@@ -576,7 +570,7 @@ const ShoppingListApp = () => {
     setInkopList(prev => ({
       ...prev,
       items: prev.items.map(item => item.id === id
-        ? { ...item, checked: !item.checked, checkedAt: !item.checked ? new Date().toISOString() : item.checkedAt }
+        ? { ...item, checked: !item.checked, checkedAt: !item.checked ? new Date().toISOString() : null }
         : item)
     }));
   };

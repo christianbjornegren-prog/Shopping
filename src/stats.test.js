@@ -70,11 +70,13 @@ describe('byPerson', () => {
 });
 
 describe('byCategory', () => {
-  it('counts categories and maps empty/missing to Övrigt', () => {
+  it('counts real categories and skips items without one', () => {
     const result = byCategory(items);
     expect(result['Mejeri']).toBe(1);
     expect(result['Bröd & Bakelser']).toBe(1);
-    expect(result['Övrigt']).toBe(2); // Äpple (empty) + Trasig (missing)
+    // Äpple (empty category) and Trasig (no category) are skipped entirely.
+    expect(result['Övrigt']).toBeUndefined();
+    expect(Object.keys(result)).toHaveLength(2);
   });
 });
 
