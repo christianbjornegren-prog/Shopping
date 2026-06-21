@@ -106,6 +106,22 @@ const SeriesLegend = ({ showChecks }) => (
   </div>
 );
 
+// A single-series vertical bar chart (time-of-day / weekday). When `empty` we
+// still render the axes with a 0–1 domain so the graph shows up blank and
+// visibly fills in as data is collected over time.
+const SimpleBars = ({ data, color, empty }) => (
+  <div style={{ width: '100%', height: 220 }}>
+    <ResponsiveContainer>
+      <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <XAxis dataKey="name" tick={axisTick} axisLine={false} tickLine={false} interval={0} />
+        <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} width={28} domain={[0, empty ? 1 : 'auto']} />
+        <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
+        <Bar dataKey="value" fill={color} radius={[6, 6, 0, 0]} animationDuration={900} />
+      </BarChart>
+    </ResponsiveContainer>
+  </div>
+);
+
 const StatsView = ({ items, history }) => {
   const addH = addsByHour(items);
   const chkH = checksByHour(items);
@@ -116,17 +132,12 @@ const StatsView = ({ items, history }) => {
   const totalChecked = items.filter(i => i.checkedAt).length;
   const hasChecks = totalChecked > 0;
 
-  const timeData = TIME_BLOCKS.map(b => ({
-    name: b.label,
-    Tillagda: sumRange(addH, b.from, b.to),
-    Avbockade: sumRange(chkH, b.from, b.to),
-  }));
-
-  const weekData = addW.map((b, i) => ({
-    name: b.label,
-    Tillagda: b.count,
-    Avbockade: chkW[i].count,
-  }));
+  // Add vs check-off are kept as SEPARATE charts – they measure different
+  // events (när varan hamnar på listan vs när den bockas av i butiken).
+  const timeAdd = TIME_BLOCKS.map(b => ({ name: b.label, value: sumRange(addH, b.from, b.to) }));
+  const timeChk = TIME_BLOCKS.map(b => ({ name: b.label, value: sumRange(chkH, b.from, b.to) }));
+  const weekAdd = addW.map(b => ({ name: b.label, value: b.count }));
+  const weekChk = chkW.map(b => ({ name: b.label, value: b.count }));
 
   const personData = Object.entries(byPerson(items))
     .map(([email, v]) => ({ name: displayName(email), Tillagda: v.added, Avbockade: v.checked }))
@@ -164,42 +175,28 @@ const StatsView = ({ items, history }) => {
         </div>
       </div>
 
-      {!hasChecks && (
-        <p className="text-xs text-gray-500 mb-5 -mt-2 text-center">
-          🔜 Avbockningsdata börjar samlas in från och med nu – handla på så fylls de blå staplarna i!
-        </p>
-      )}
-
-      {/* Tid på dygnet */}
-      <StatCard title="När på dygnet?" icon={Clock} hint="När lägger ni till (och bockar av) varor?">
-        <SeriesLegend showChecks={hasChecks} />
-        <div style={{ width: '100%', height: 220 }}>
-          <ResponsiveContainer>
-            <BarChart data={timeData} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
-              <XAxis dataKey="name" tick={axisTick} axisLine={false} tickLine={false} />
-              <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} width={28} />
-              <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
-              <Bar dataKey="Tillagda" fill={ADD_COLOR} radius={[6, 6, 0, 0]} animationDuration={900} />
-              {hasChecks && <Bar dataKey="Avbockade" fill={CHECK_COLOR} radius={[6, 6, 0, 0]} animationDuration={900} animationBegin={150} />}
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+      {/* --- TILLÄGG (grön): baseras på addedAt --- */}
+      <StatCard title="🛒 När lägger ni till varor?" icon={Clock} hint="Tid på dygnet då varor hamnar på listan.">
+        <SimpleBars data={timeAdd} color={ADD_COLOR} />
       </StatCard>
 
-      {/* Veckodagar */}
-      <StatCard title="Vilka veckodagar?" icon={TrendingUp} hint="Måndag först – er mest aktiva handledag sticker ut.">
-        <SeriesLegend showChecks={hasChecks} />
-        <div style={{ width: '100%', height: 220 }}>
-          <ResponsiveContainer>
-            <BarChart data={weekData} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
-              <XAxis dataKey="name" tick={axisTick} axisLine={false} tickLine={false} />
-              <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} width={28} />
-              <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
-              <Bar dataKey="Tillagda" fill={ADD_COLOR} radius={[6, 6, 0, 0]} animationDuration={900} />
-              {hasChecks && <Bar dataKey="Avbockade" fill={CHECK_COLOR} radius={[6, 6, 0, 0]} animationDuration={900} animationBegin={150} />}
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+      <StatCard title="🛒 Vilka dagar lägger ni till varor?" icon={TrendingUp} hint="Måndag först.">
+        <SimpleBars data={weekAdd} color={ADD_COLOR} />
+      </StatCard>
+
+      {/* --- HANDLANDE (blå): baseras på checkedAt, tom tills data finns --- */}
+      <StatCard title="✅ När handlar ni?" icon={Clock} hint="Tid på dygnet då varor bockas av i butiken.">
+        <SimpleBars data={timeChk} color={CHECK_COLOR} empty={!hasChecks} />
+        {!hasChecks && (
+          <p className="text-xs text-gray-500 text-center mt-2">🔜 Tom än – fylls på allt eftersom ni bockar av varor.</p>
+        )}
+      </StatCard>
+
+      <StatCard title="✅ Vilka dagar handlar ni?" icon={TrendingUp} hint="Måndag först.">
+        <SimpleBars data={weekChk} color={CHECK_COLOR} empty={!hasChecks} />
+        {!hasChecks && (
+          <p className="text-xs text-gray-500 text-center mt-2">🔜 Tom än – fylls på allt eftersom ni bockar av varor.</p>
+        )}
       </StatCard>
 
       {/* Per person */}
