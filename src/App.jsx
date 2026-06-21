@@ -1,209 +1,19 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
-import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp } from 'lucide-react';import { auth, googleProvider } from './firebase';
+import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp } from 'lucide-react';
+import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
 import { db } from './firebase';
+import {
+  normalize,
+  groceryDB,
+  categories,
+  categoryMeta,
+  findProductCategory,
+  getFavorites
+} from './categorization';
 
-// Normalize text: remove accents, lowercase
-const normalize = (text) => {
-  return text.toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-};
-
-// Comprehensive Swedish grocery database with proper capitalization
-const groceryDB = [
-  // Frukt & Grönt
-  { name: 'Morot', category: 'Frukt & Grönt', aliases: ['morötter', 'moro'], keywords: ['grönsak'] },
-  { name: 'Potatis', category: 'Frukt & Grönt', aliases: ['potatisar', 'pota'], keywords: ['grönsak'] },
-  { name: 'Tomat', category: 'Frukt & Grönt', aliases: ['tomater'], keywords: ['grönsak'] },
-  { name: 'Gurka', category: 'Frukt & Grönt', aliases: ['gurkor'], keywords: ['grönsak'] },
-  { name: 'Lök', category: 'Frukt & Grönt', aliases: ['lökar', 'gul lök', 'rödlök'], keywords: ['grönsak'] },
-  { name: 'Vitlök', category: 'Frukt & Grönt', aliases: ['vitlökar'], keywords: ['grönsak'] },
-  { name: 'Paprika', category: 'Frukt & Grönt', aliases: ['paprikor', 'röd paprika'], keywords: ['grönsak'] },
-  { name: 'Sallad', category: 'Frukt & Grönt', aliases: ['isbergssallad', 'romansallad'], keywords: ['grönsak'] },
-  { name: 'Broccoli', category: 'Frukt & Grönt', aliases: ['broccolli'], keywords: ['grönsak'] },
-  { name: 'Blomkål', category: 'Frukt & Grönt', aliases: ['blomkålen'], keywords: ['grönsak'] },
-  { name: 'Spenat', category: 'Frukt & Grönt', aliases: ['färsk spenat'], keywords: ['grönsak'] },
-  { name: 'Ruccola', category: 'Frukt & Grönt', aliases: ['rucola'], keywords: ['grönsak'] },
-  { name: 'Champinjoner', category: 'Frukt & Grönt', aliases: ['champinjon', 'svamp'], keywords: ['grönsak'] },
-  { name: 'Zucchini', category: 'Frukt & Grönt', aliases: ['zuccini'], keywords: ['grönsak'] },
-  { name: 'Aubergine', category: 'Frukt & Grönt', aliases: ['auberginer'], keywords: ['grönsak'] },
-  { name: 'Selleri', category: 'Frukt & Grönt', aliases: ['selleristjälk'], keywords: ['grönsak'] },
-  { name: 'Palsternacka', category: 'Frukt & Grönt', aliases: ['palsternackor'], keywords: ['grönsak'] },
-  { name: 'Purjolök', category: 'Frukt & Grönt', aliases: ['purjo'], keywords: ['grönsak'] },
-  
-  // Frukt
-  { name: 'Äpple', category: 'Frukt & Grönt', aliases: ['äpplen', 'äpplena'], keywords: ['frukt'] },
-  { name: 'Banan', category: 'Frukt & Grönt', aliases: ['bananer'], keywords: ['frukt'] },
-  { name: 'Apelsin', category: 'Frukt & Grönt', aliases: ['apelsiner'], keywords: ['frukt'] },
-  { name: 'Clementin', category: 'Frukt & Grönt', aliases: ['clementiner'], keywords: ['frukt'] },
-  { name: 'Druvor', category: 'Frukt & Grönt', aliases: ['vindruvor', 'röda druvor'], keywords: ['frukt'] },
-  { name: 'Päron', category: 'Frukt & Grönt', aliases: ['päronen'], keywords: ['frukt'] },
-  { name: 'Mango', category: 'Frukt & Grönt', aliases: ['mangon'], keywords: ['frukt'] },
-  { name: 'Avokado', category: 'Frukt & Grönt', aliases: ['avokador'], keywords: ['frukt'] },
-  { name: 'Lime', category: 'Frukt & Grönt', aliases: ['limefrukter'], keywords: ['frukt'] },
-  { name: 'Citron', category: 'Frukt & Grönt', aliases: ['citroner'], keywords: ['frukt'] },
-  { name: 'Jordgubbar', category: 'Frukt & Grönt', aliases: ['jordgubbe'], keywords: ['frukt', 'bär'] },
-  { name: 'Blåbär', category: 'Frukt & Grönt', aliases: ['blåbären'], keywords: ['frukt', 'bär'] },
-  { name: 'Hallon', category: 'Frukt & Grönt', aliases: ['hallonen'], keywords: ['frukt', 'bär'] },
-  { name: 'Vattenmelon', category: 'Frukt & Grönt', aliases: ['melon'], keywords: ['frukt'] },
-  
-  // Mejeri
-  { name: 'Mjölk', category: 'Mejeri', aliases: ['mellanmjölk', 'standardmjölk', 'mjo'], keywords: ['mejeri'] },
-  { name: 'Filmjölk', category: 'Mejeri', aliases: ['fil'], keywords: ['mejeri'] },
-  { name: 'Yoghurt', category: 'Mejeri', aliases: ['naturell yoghurt', 'turkisk yoghurt'], keywords: ['mejeri'] },
-  { name: 'Kvarg', category: 'Mejeri', aliases: ['kvargen'], keywords: ['mejeri'] },
-  { name: 'Smör', category: 'Mejeri', aliases: ['bregott', 'smöret'], keywords: ['mejeri'] },
-  { name: 'Margarin', category: 'Mejeri', aliases: ['becel', 'lätt margarin'], keywords: ['mejeri'] },
-  { name: 'Ost', category: 'Mejeri', aliases: ['hårdost', 'lagrad ost'], keywords: ['mejeri'] },
-  { name: 'Riven ost', category: 'Mejeri', aliases: ['rivven ost'], keywords: ['mejeri', 'ost'] },
-  { name: 'Mozzarella', category: 'Mejeri', aliases: ['mozz', 'buffelmozzarella'], keywords: ['mejeri', 'ost'] },
-  { name: 'Fetaost', category: 'Mejeri', aliases: ['feta'], keywords: ['mejeri', 'ost'] },
-  { name: 'Keso', category: 'Mejeri', aliases: ['kesoen'], keywords: ['mejeri'] },
-  { name: 'Ägg', category: 'Mejeri', aliases: ['äggen', 'frilandsägg'], keywords: ['mejeri'] },
-  { name: 'Grädde', category: 'Mejeri', aliases: ['matlagningsgrädde'], keywords: ['mejeri'] },
-  { name: 'Vispgrädde', category: 'Mejeri', aliases: ['visp', 'grädde 36%', 'vispgrädden'], keywords: ['mejeri'] },
-  { name: 'Crème fraiche', category: 'Mejeri', aliases: ['creme fraiche', 'fraiche', 'cr', 'créme fraiche'], keywords: ['mejeri'] },
-  { name: 'Gräddfil', category: 'Mejeri', aliases: ['gräddfilen'], keywords: ['mejeri'] },
-  { name: 'Cheddar', category: 'Mejeri', aliases: ['cheddarost'], keywords: ['mejeri', 'ost'] },
-  { name: 'Parmesan', category: 'Mejeri', aliases: ['parmesanost', 'riven parmesan'], keywords: ['mejeri', 'ost'] },
-  { name: 'Halloumi', category: 'Mejeri', aliases: ['halloumin'], keywords: ['mejeri', 'ost'] },
-  { name: 'Färskost', category: 'Mejeri', aliases: ['philadelphia', 'philadelphiaost'], keywords: ['mejeri', 'ost'] },
-  { name: 'Brie', category: 'Mejeri', aliases: ['brieost'], keywords: ['mejeri', 'ost'] },
-  { name: 'Gräddost', category: 'Mejeri', aliases: ['gräddosten'], keywords: ['mejeri', 'ost'] },
-  
-  // Kött & Fisk
-  { name: 'Köttfärs', category: 'Kött & Fisk', aliases: ['färs', 'nötfärs', 'blandfärs'], keywords: ['kött'] },
-  { name: 'Kycklingfilé', category: 'Kött & Fisk', aliases: ['kyckling', 'kycklingbröst'], keywords: ['kött', 'fågel'] },
-  { name: 'Fläskfilé', category: 'Kött & Fisk', aliases: ['fläsk'], keywords: ['kött'] },
-  { name: 'Bacon', category: 'Kött & Fisk', aliases: ['baconet', 'baconstrimlor'], keywords: ['kött'] },
-  { name: 'Korv', category: 'Kött & Fisk', aliases: ['korvar', 'prinskorv', 'falukorv'], keywords: ['kött', 'korv'] },
-  { name: 'Salami', category: 'Kött & Fisk', aliases: ['salamikorv', 'tryffelsalami', 'milano'], keywords: ['kött', 'korv', 'tryffel'] },
-  { name: 'Skinka', category: 'Kött & Fisk', aliases: ['skinkan', 'kokt skinka'], keywords: ['kött'] },
-  { name: 'Lax', category: 'Kött & Fisk', aliases: ['laxfilé', 'gravad lax'], keywords: ['fisk'] },
-  { name: 'Torsk', category: 'Kött & Fisk', aliases: ['torskfilé'], keywords: ['fisk'] },
-  { name: 'Räkor', category: 'Kött & Fisk', aliases: ['skalade räkor', 'räka'], keywords: ['fisk', 'skaldjur'] },
-  { name: 'Köttbullar', category: 'Kött & Fisk', aliases: ['kottbullar'], keywords: ['kött'] },
-  { name: 'Kassler', category: 'Kött & Fisk', aliases: ['rökt kassler'], keywords: ['kött'] },
-  { name: 'Kalkonfilé', category: 'Kött & Fisk', aliases: ['kalkon'], keywords: ['kött', 'fågel'] },
-  { name: 'Entrecôte', category: 'Kött & Fisk', aliases: ['entrecote'], keywords: ['kött'] },
-  
-  // Skafferi
-  { name: 'Pasta', category: 'Skafferi', aliases: ['spaghetti', 'makaroner', 'penne', 'pastan'], keywords: ['torrvara'] },
-  { name: 'Ris', category: 'Skafferi', aliases: ['jasminris', 'basmatris', 'riset'], keywords: ['torrvara'] },
-  { name: 'Mjöl', category: 'Skafferi', aliases: ['vetemjöl', 'mjölet'], keywords: ['bakning'] },
-  { name: 'Socker', category: 'Skafferi', aliases: ['strösocker', 'sockret'], keywords: ['bakning'] },
-  { name: 'Salt', category: 'Skafferi', aliases: ['bordssalt', 'saltet'], keywords: ['krydda'] },
-  { name: 'Peppar', category: 'Skafferi', aliases: ['svartpeppar', 'pepparn'], keywords: ['krydda'] },
-  { name: 'Olja', category: 'Skafferi', aliases: ['matolja', 'rapsolja'], keywords: ['matlagning'] },
-  { name: 'Olivolja', category: 'Skafferi', aliases: ['extra virgin olivolja'], keywords: ['matlagning'] },
-  { name: 'Ketchup', category: 'Skafferi', aliases: ['felix ketchup', 'ketchupen'], keywords: ['sås'] },
-  { name: 'Senap', category: 'Skafferi', aliases: ['dijonsenap', 'senapen'], keywords: ['sås'] },
-  { name: 'Majonnäs', category: 'Skafferi', aliases: ['majonnäsen', 'majonäs'], keywords: ['sås'] },
-  { name: 'Ättika', category: 'Skafferi', aliases: ['ättikan', 'vinäger', 'balsamico'], keywords: ['sås'] },
-  { name: 'Soja', category: 'Skafferi', aliases: ['sojasås', 'sojan'], keywords: ['sås'] },
-  { name: 'Honung', category: 'Skafferi', aliases: ['honungen'], keywords: ['sötning'] },
-  { name: 'Tomatpuré', category: 'Skafferi', aliases: ['tomatpure', 'tomatpurén'], keywords: ['konserv'] },
-  { name: 'Krossade tomater', category: 'Skafferi', aliases: ['tomater på burk'], keywords: ['konserv'] },
-  { name: 'Kokosmjölk', category: 'Skafferi', aliases: ['kokosmjölken'], keywords: ['konserv'] },
-  { name: 'Linser', category: 'Skafferi', aliases: ['röda linser', 'gröna linser'], keywords: ['torrvara'] },
-  { name: 'Bönor', category: 'Skafferi', aliases: ['kidneybönor', 'svarta bönor'], keywords: ['konserv'] },
-  { name: 'Kikärtor', category: 'Skafferi', aliases: ['kikärtorna'], keywords: ['konserv'] },
-  { name: 'Müsli', category: 'Skafferi', aliases: ['musli', 'flingor'], keywords: ['frukost'] },
-  { name: 'Havregryn', category: 'Skafferi', aliases: ['havre', 'gryn'], keywords: ['frukost'] },
-  
-  // Bröd & Bakelser
-  { name: 'Bröd', category: 'Bröd & Bakelser', aliases: ['brödlimpa', 'formbröd'], keywords: ['bakverk'] },
-  { name: 'Hamburgerbröd', category: 'Bröd & Bakelser', aliases: ['hamburgare bröd'], keywords: ['bakverk'] },
-  { name: 'Wraps', category: 'Bröd & Bakelser', aliases: ['tortilla'], keywords: ['bakverk'] },
-  { name: 'Pitabröd', category: 'Bröd & Bakelser', aliases: ['pita'], keywords: ['bakverk'] },
-  { name: 'Knäckebröd', category: 'Bröd & Bakelser', aliases: ['knäcke'], keywords: ['bakverk'] },
-  { name: 'Kavring', category: 'Bröd & Bakelser', aliases: ['rågkavring'], keywords: ['bakverk'] },
-  { name: 'Croissant', category: 'Bröd & Bakelser', aliases: ['croissanter'], keywords: ['bakverk'] },
-  { name: 'Frallor', category: 'Bröd & Bakelser', aliases: ['fralla'], keywords: ['bakverk'] },
-  
-  // Fryst
-  { name: 'Frysta bär', category: 'Fryst', aliases: ['frysta hallon', 'frysta blåbär'], keywords: ['fryst'] },
-  { name: 'Frysta grönsaker', category: 'Fryst', aliases: ['wok mix', 'grönsaksblandning'], keywords: ['fryst'] },
-  { name: 'Glass', category: 'Fryst', aliases: ['vaniljglass', 'glassen'], keywords: ['fryst', 'dessert'] },
-  { name: 'Pommes frites', category: 'Fryst', aliases: ['pommes', 'strips'], keywords: ['fryst'] },
-  { name: 'Fiskpinnar', category: 'Fryst', aliases: ['fiskpinnarna'], keywords: ['fryst', 'fisk'] },
-  { name: 'Pizzadeg', category: 'Fryst', aliases: ['fryst pizzadeg'], keywords: ['fryst'] },
-  
-  // Dryck
-  { name: 'Kaffe', category: 'Dryck', aliases: ['bryggkaffe', 'kaffet'], keywords: ['dryck'] },
-  { name: 'Te', category: 'Dryck', aliases: ['teet', 'teblad'], keywords: ['dryck'] },
-  { name: 'Juice', category: 'Dryck', aliases: ['apelsinjuice', 'äppeljuice'], keywords: ['dryck'] },
-  { name: 'Cola', category: 'Dryck', aliases: ['coca cola', 'coke'], keywords: ['dryck', 'läsk'] },
-  { name: 'Vatten', category: 'Dryck', aliases: ['mineralvatten', 'ramlösa'], keywords: ['dryck'] },
-  { name: 'Läsk', category: 'Dryck', aliases: ['fanta', 'sprite'], keywords: ['dryck'] },
-  { name: 'Öl', category: 'Dryck', aliases: ['ölen', 'folköl'], keywords: ['dryck', 'alkohol'] },
-  
-  // Godis & Snacks
-  { name: 'Chips', category: 'Godis & Snacks', aliases: ['chipsen', 'estrella', 'olw'], keywords: ['snacks'] },
-  { name: 'Godis', category: 'Godis & Snacks', aliases: ['lösgodis', 'godiset'], keywords: ['snacks'] },
-  { name: 'Choklad', category: 'Godis & Snacks', aliases: ['chokladen', 'marabou'], keywords: ['snacks'] },
-  { name: 'Nötter', category: 'Godis & Snacks', aliases: ['cashewnötter', 'mandlar'], keywords: ['snacks'] },
-  { name: 'Popcorn', category: 'Godis & Snacks', aliases: ['popcornet'], keywords: ['snacks'] },
-  { name: 'Kex', category: 'Godis & Snacks', aliases: ['ballerina', 'digestive'], keywords: ['snacks'] },
-  
-  // Hushåll
-  { name: 'Diskmedel', category: 'Hushåll', aliases: ['yes', 'diskmedlet'], keywords: ['städning'] },
-  { name: 'Toapapper', category: 'Hushåll', aliases: ['toalettpapper', 'toarulle'], keywords: ['hygien'] },
-  { name: 'Hushållspapper', category: 'Hushåll', aliases: ['papper'], keywords: ['städning'] },
-  { name: 'Tvättmedel', category: 'Hushåll', aliases: ['tvättmedellet'], keywords: ['tvätt'] },
-  { name: 'Soppåsar', category: 'Hushåll', aliases: ['soppåse', 'soppåsarna'], keywords: ['städning'] },
-  { name: 'Blöjor', category: 'Hushåll', aliases: ['blöja', 'barnblöjor', 'pampers'], keywords: ['baby'] },
-  { name: 'Våtservetter', category: 'Hushåll', aliases: ['babyvåtservetter', 'våtservett'], keywords: ['baby'] },
-  { name: 'Aluminiumfolie', category: 'Hushåll', aliases: ['folie', 'alfolie'], keywords: ['förvaring'] },
-  { name: 'Plastfolie', category: 'Hushåll', aliases: ['plastfilm'], keywords: ['förvaring'] },
-  { name: 'Diskborste', category: 'Hushåll', aliases: ['diskborsten'], keywords: ['städning'] },
-  { name: 'Tvål', category: 'Hushåll', aliases: ['handtvål', 'tvålen'], keywords: ['hygien'] },
-  { name: 'Tandkräm', category: 'Hushåll', aliases: ['tandkrämen'], keywords: ['hygien'] },
-  { name: 'Schampo', category: 'Hushåll', aliases: ['schampot'], keywords: ['hygien'] },
-  { name: 'Balsam', category: 'Hushåll', aliases: ['hårbalsam'], keywords: ['hygien'] },
-  { name: 'Duschtvål', category: 'Hushåll', aliases: ['duschkräm', 'duschgel'], keywords: ['hygien'] },
-  { name: 'Kattmat', category: 'Hushåll', aliases: ['katt mat', 'torrfoder katt', 'våtfoder katt'], keywords: ['husdjur', 'katt'] },
-  { name: 'Hundmat', category: 'Hushåll', aliases: ['hund mat', 'torrfoder hund', 'våtfoder hund'], keywords: ['husdjur', 'hund'] },
-  { name: 'Kattsand', category: 'Hushåll', aliases: ['kattlådesand', 'sand'], keywords: ['husdjur', 'katt'] }
-];
-
-// Smart product finder with accent-insensitive fuzzy matching
-const findProductCategory = (searchTerm) => {
-  const normalized = normalize(searchTerm.trim());
-  
-  // 1. Exact match
-  let match = groceryDB.find(p => normalize(p.name) === normalized);
-  if (match) return { category: match.category, source: 'exact' };
-  
-  // 2. Alias match
-  match = groceryDB.find(p => p.aliases.some(a => normalize(a) === normalized));
-  if (match) return { category: match.category, source: 'alias' };
-  
-  // 3. Partial word match (e.g., "tryffelsalami" contains "salami")
-  for (const product of groceryDB) {
-    const normalizedProductName = normalize(product.name);
-    if (normalized.includes(normalizedProductName) || 
-        normalizedProductName.includes(normalized)) {
-      return { category: product.category, source: 'partial' };
-    }
-    for (const alias of product.aliases) {
-      const normalizedAlias = normalize(alias);
-      if (normalized.includes(normalizedAlias) || 
-          normalizedAlias.includes(normalized)) {
-        return { category: product.category, source: 'partial' };
-      }
-    }
-  }
-  
-  // 4. Keyword match
-  match = groceryDB.find(p => p.keywords?.some(k => normalized.includes(normalize(k))));
-  if (match) return { category: match.category, source: 'keyword' };
-  
-  return null;
-};
 
 const ShoppingListApp = () => {
   const [user, setUser] = useState(null);
@@ -321,18 +131,9 @@ const ShoppingListApp = () => {
   const inkopLoaded = useRef(false);
   const isInkopRemoteUpdate = useRef(false);
 
-  const categories = [
-    'Frukt & Grönt',
-    'Mejeri',
-    'Kött & Fisk',
-    'Skafferi',
-    'Bröd & Bakelser',
-    'Fryst',
-    'Dryck',
-    'Godis & Snacks',
-    'Hushåll',
-    'Övrigt'
-  ];
+  // Quick-add favourites derived from purchase history (most-bought first),
+  // excluding items already on the current list.
+  const favorites = getFavorites(userProductHistory, activeList.items, 8);
 
   // Get suggestions from both static DB and user history
   const getSuggestions = (input) => {
@@ -615,23 +416,24 @@ const ShoppingListApp = () => {
   const totalCount = activeList.items.length;
 
   const renderItem = (item) => (
-    <div key={item.id} className={`px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
+    <div key={item.id} className={`group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
       <button
         onClick={() => toggleCheck(item.id)}
-        className={`flex-shrink-0 w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
+        aria-label={item.checked ? 'Ångra' : 'Bocka av'}
+        className={`flex-shrink-0 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all active:scale-90 ${
           item.checked
             ? 'bg-green-500 border-green-500'
-            : 'border-gray-600 hover:border-green-500'
+            : 'border-gray-600 hover:border-green-400'
         }`}
       >
         {item.checked && <Check className="w-4 h-4 text-white" />}
       </button>
 
-      <div className="flex-grow">
-        <div className="font-medium">{item.name}</div>
+      <div className="flex-grow min-w-0">
+        <div className="font-medium truncate">{item.name}</div>
       </div>
 
-      <div className="relative">
+      <div className="relative flex-shrink-0">
         <button
           onClick={(e) => {
             if (window.innerWidth >= 768) {
@@ -640,8 +442,13 @@ const ShoppingListApp = () => {
               setEditingCategoryId(item.id);
             }
           }}
-          className={`text-xs px-2 py-1 rounded ${item.category ? 'text-green-400' : 'text-yellow-400'}`}
+          className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+            item.category
+              ? 'text-gray-300 border-gray-700 bg-gray-750 hover:bg-gray-700'
+              : 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/20'
+          }`}
         >
+          <span className="mr-1">{(categoryMeta[item.category] || categoryMeta['Osorterat']).emoji}</span>
           {item.category || 'Osorterat'}
         </button>
         <select
@@ -663,9 +470,10 @@ const ShoppingListApp = () => {
 
       <button
         onClick={() => deleteItem(item.id)}
-        className="flex-shrink-0 p-2 hover:bg-gray-600 rounded-lg transition-colors"
+        aria-label="Ta bort"
+        className="flex-shrink-0 p-2 rounded-lg text-gray-500 hover:text-red-400 hover:bg-gray-700 transition-colors md:opacity-0 md:group-hover:opacity-100"
       >
-        <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-400" />
+        <Trash2 className="w-4 h-4" />
       </button>
     </div>
   );
@@ -689,13 +497,15 @@ const ShoppingListApp = () => {
   if (!user) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-        <div className="bg-gray-800 rounded-lg shadow-xl p-8 max-w-md w-full text-center">
-          <ShoppingCart className="w-16 h-16 text-green-500 mx-auto mb-4" />
-          <h1 className="text-3xl font-bold text-white mb-2">CHRELIN</h1>
-          <p className="text-gray-400 mb-6">Smart inköpslista för svenska matvarubutiker</p>
+        <div className="bg-gray-800 rounded-3xl shadow-card border border-gray-750 p-8 max-w-md w-full text-center">
+          <div className="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-green-500 to-green-700 flex items-center justify-center shadow-lg">
+            <ShoppingCart className="w-10 h-10 text-white" />
+          </div>
+          <h1 className="text-3xl font-extrabold text-white mb-2 tracking-tight">CHRELIN</h1>
+          <p className="text-gray-400 mb-8">Smart inköpslista för svenska matvarubutiker</p>
           <button
             onClick={handleLogin}
-            className="w-full bg-white text-gray-900 py-3 px-6 rounded-lg font-semibold hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
+            className="w-full bg-white text-gray-900 py-3 px-6 rounded-xl font-semibold hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
               <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -713,26 +523,26 @@ const ShoppingListApp = () => {
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
-      <div className="bg-gray-800 border-b border-gray-700 sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-4 py-4">
+      <div className="bg-gray-850/90 backdrop-blur border-b border-gray-750 sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <ShoppingCart className="w-8 h-8 text-green-500" />
-              <div>
-                <h1 className="text-xl font-bold">CHRELIN</h1>
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-green-500 to-green-700 flex items-center justify-center shadow">
+                <ShoppingCart className="w-5 h-5 text-white" />
               </div>
+              <h1 className="text-xl font-extrabold tracking-tight">CHRELIN</h1>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
               <button
                 onClick={() => setShowInviteModal(true)}
-                className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+                className="p-2.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors"
                 title="Bjud in"
               >
                 <UserPlus className="w-5 h-5" />
               </button>
               <button
                 onClick={handleLogout}
-                className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+                className="p-2.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors"
                 title="Logga ut"
               >
                 <LogOut className="w-5 h-5" />
@@ -743,28 +553,28 @@ const ShoppingListApp = () => {
       </div>
 
       {/* Tabs */}
-      <div className="bg-gray-800 border-b border-gray-700">
-        <div className="max-w-4xl mx-auto px-4">
-          <div className="flex gap-4">
+      <div className="bg-gray-850 border-b border-gray-750">
+        <div className="max-w-4xl mx-auto px-4 py-3">
+          <div className="flex gap-2 bg-gray-800 p-1 rounded-xl">
             <button
               onClick={() => setActiveTab('active')}
-              className={`py-3 px-4 font-medium border-b-2 transition-colors ${
+              className={`flex-1 py-2 px-4 font-semibold text-sm rounded-lg transition-colors ${
                 activeTab === 'active'
-                  ? 'border-green-500 text-white'
-                  : 'border-transparent text-gray-400 hover:text-white'
+                  ? 'bg-green-600 text-white shadow'
+                  : 'text-gray-400 hover:text-white'
               }`}
             >
-              Matvaror ({totalCount - checkedCount})
+              Matvaror
             </button>
             <button
               onClick={() => setActiveTab('inkop')}
-              className={`py-3 px-4 font-medium border-b-2 transition-colors ${
+              className={`flex-1 py-2 px-4 font-semibold text-sm rounded-lg transition-colors ${
                 activeTab === 'inkop'
-                  ? 'border-green-500 text-white'
-                  : 'border-transparent text-gray-400 hover:text-white'
+                  ? 'bg-green-600 text-white shadow'
+                  : 'text-gray-400 hover:text-white'
               }`}
             >
-              Inköp ({inkopList.items.filter(i => !i.checked).length})
+              Inköp
             </button>
           </div>
         </div>
@@ -775,8 +585,8 @@ const ShoppingListApp = () => {
         {activeTab === 'active' ? (
           <>
             {/* Add Item Section */}
-            <div className="bg-gray-800 rounded-lg p-4 mb-6">
-                <div className="relative mb-3 bg-gray-700 rounded-lg">
+            <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-4 mb-5">
+                <div className="relative mb-3 bg-gray-750 rounded-xl border border-gray-700 focus-within:border-green-500 transition-colors">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                   {inlineSuggestion && searchTerm && (
                     <span
@@ -796,42 +606,42 @@ const ShoppingListApp = () => {
                       setInlineSuggestion(getInlineCompletion(newVal));
                     }}
                     onKeyDown={(e) => {
-                      if (inlineSuggestion) {
-                        if (e.key === 'Tab' || e.key === 'ArrowRight') {
-                          e.preventDefault();
-                          setSearchTerm(inlineSuggestion);
-                          setInlineSuggestion(null);
-                          return;
-                        }
-                        if (e.key === 'Escape') {
-                          setInlineSuggestion(null);
-                          return;
-                        }
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleAddItem(inlineSuggestion);
-                          setInlineSuggestion(null);
-                          return;
-                        }
+                      // Ghost-text autocomplete is only accepted with Tab / →.
+                      if (inlineSuggestion && (e.key === 'Tab' || e.key === 'ArrowRight')) {
+                        e.preventDefault();
+                        setSearchTerm(inlineSuggestion);
+                        setInlineSuggestion(null);
+                        return;
                       }
-                      if (e.key === 'Enter') handleAddItem();
+                      if (e.key === 'Escape') {
+                        setInlineSuggestion(null);
+                        return;
+                      }
+                      // Enter always adds exactly what was typed — never the ghost
+                      // suggestion (see resolveAddName in categorization.js).
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddItem();
+                        setInlineSuggestion(null);
+                      }
                     }}
                     placeholder="Vad ska du handla?"
-                    className="relative w-full bg-transparent text-white pl-10 pr-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="relative w-full bg-transparent text-white pl-10 pr-4 py-3 rounded-xl focus:outline-none"
                   />
-                  
+
                   {suggestions.length > 0 && searchTerm && (
-                    <div className="absolute w-full bg-gray-700 mt-1 rounded-lg shadow-lg overflow-hidden z-20 border border-gray-600">
+                    <div className="absolute w-full bg-gray-750 mt-2 rounded-xl shadow-card overflow-hidden z-20 border border-gray-700">
                       {suggestions.map((suggestion, idx) => (
                         <button
                           key={idx}
                           onClick={() => handleAddItem(suggestion.name, suggestion.category)}
-                          className="w-full px-4 py-3 text-left hover:bg-gray-600 flex justify-between items-center border-b border-gray-600 last:border-b-0"
+                          className="w-full px-4 py-3 text-left hover:bg-gray-700 flex justify-between items-center border-b border-gray-700 last:border-b-0"
                         >
-                          <div>
-                            <span className="font-medium">{suggestion.name}</span>
-                          </div>
-                          <span className="text-sm text-green-400">{suggestion.category}</span>
+                          <span className="font-medium">{suggestion.name}</span>
+                          <span className="text-xs text-gray-400 flex items-center gap-1">
+                            <span>{(categoryMeta[suggestion.category] || categoryMeta['Osorterat']).emoji}</span>
+                            {suggestion.category || 'Osorterat'}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -840,33 +650,56 @@ const ShoppingListApp = () => {
 
                 <button
                   onClick={() => handleAddItem()}
-                  className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                  className="w-full bg-green-600 hover:bg-green-500 active:scale-[0.99] text-white px-6 py-2.5 rounded-xl font-semibold transition-all flex items-center justify-center gap-2"
                 >
                   <Plus className="w-5 h-5" />
                   Lägg till
                 </button>
             </div>
 
+            {/* Quick-add favourites */}
+            {!searchTerm && favorites.length > 0 && (
+              <div className="mb-5">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2 px-1">Snabbval</div>
+                <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                  {favorites.map((fav) => (
+                    <button
+                      key={fav.name}
+                      onClick={() => handleAddItem(fav.name, fav.category)}
+                      className="flex-shrink-0 flex items-center gap-1.5 bg-gray-800 border border-gray-750 hover:border-green-500 hover:bg-gray-750 text-sm text-gray-200 pl-3 pr-3 py-2 rounded-full transition-colors"
+                    >
+                      <span>{(categoryMeta[fav.category] || categoryMeta['Osorterat']).emoji}</span>
+                      <span className="whitespace-nowrap">{fav.name}</span>
+                      <Plus className="w-3.5 h-3.5 text-green-400" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Shopping List */}
             {totalCount === 0 ? (
-              <div className="text-center py-12 text-gray-500">
-                <ShoppingCart className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                <p>Din inköpslista är tom</p>
-                <p className="text-sm mt-2">Börja lägga till varor ovan</p>
+              <div className="text-center py-16 text-gray-500">
+                <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
+                  <ShoppingCart className="w-10 h-10 opacity-60" />
+                </div>
+                <p className="font-medium text-gray-400">Din inköpslista är tom</p>
+                <p className="text-sm mt-1">Börja lägga till varor ovan</p>
               </div>
             ) : (
               <>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   {/* Osorterat section */}
                   {(() => {
                     const unsortedItems = activeList.items.filter(i => !i.checked && !i.category);
                     if (unsortedItems.length === 0) return null;
                     return (
-                      <div className="bg-gray-800 rounded-lg overflow-hidden">
-                        <div className="bg-gray-750 px-4 py-2 font-semibold text-yellow-400 border-b border-gray-700">
-                          Osorterat ({unsortedItems.length})
+                      <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 overflow-hidden">
+                        <div className="bg-gray-850 px-4 py-2.5 font-semibold text-yellow-400 border-b border-gray-750 flex items-center gap-2">
+                          <span>{categoryMeta['Osorterat'].emoji}</span>
+                          Osorterat
                         </div>
-                        <div className="divide-y divide-gray-700">
+                        <div className="divide-y divide-gray-750">
                           {unsortedItems.map(item => renderItem(item))}
                         </div>
                       </div>
@@ -877,12 +710,14 @@ const ShoppingListApp = () => {
                   {categories.map(cat => {
                     const catItems = activeList.items.filter(i => !i.checked && i.category === cat);
                     if (catItems.length === 0) return null;
+                    const meta = categoryMeta[cat] || categoryMeta['Övrigt'];
                     return (
-                      <div key={cat} className="bg-gray-800 rounded-lg overflow-hidden">
-                        <div className="bg-gray-750 px-4 py-2 font-semibold text-green-500 border-b border-gray-700">
-                          {cat} ({catItems.length})
+                      <div key={cat} className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 overflow-hidden">
+                        <div className={`bg-gray-850 px-4 py-2.5 font-semibold border-b border-gray-750 flex items-center gap-2 ${meta.accent}`}>
+                          <span>{meta.emoji}</span>
+                          {cat}
                         </div>
-                        <div className="divide-y divide-gray-700">
+                        <div className="divide-y divide-gray-750">
                           {catItems.map(item => renderItem(item))}
                         </div>
                       </div>
@@ -891,21 +726,21 @@ const ShoppingListApp = () => {
 
                   {/* Collapsed checked items */}
                   {checkedCount > 0 && (
-                    <div className="bg-gray-800 rounded-lg overflow-hidden">
+                    <div className="bg-gray-800 rounded-2xl border border-gray-750 overflow-hidden">
                       <button
                         onClick={() => setCheckedExpanded(prev => !prev)}
-                        className="w-full px-4 py-3 flex items-center justify-between text-gray-400 hover:bg-gray-700 transition-colors"
+                        className="w-full px-4 py-3 flex items-center justify-between text-gray-400 hover:bg-gray-750 transition-colors"
                       >
                         <span>{checkedCount} köpta varor</span>
                         {checkedExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                       </button>
                       {checkedExpanded && (
-                        <div className="divide-y divide-gray-700 border-t border-gray-700">
+                        <div className="divide-y divide-gray-750 border-t border-gray-750">
                           {activeList.items.filter(i => i.checked).map(item => (
                             <div key={item.id} className="px-4 py-3 flex items-center gap-3">
                               <button
                                 onClick={() => toggleCheck(item.id)}
-                                className="flex-shrink-0 w-6 h-6 rounded border-2 bg-green-500 border-green-500 flex items-center justify-center"
+                                className="flex-shrink-0 w-7 h-7 rounded-full border-2 bg-green-500 border-green-500 flex items-center justify-center"
                               >
                                 <Check className="w-4 h-4 text-white" />
                               </button>
@@ -924,8 +759,8 @@ const ShoppingListApp = () => {
           /* Inköp Tab */
           <>
             {/* Add Item Section */}
-            <div className="bg-gray-800 rounded-lg p-4 mb-6">
-              <div className="relative mb-3 bg-gray-700 rounded-lg">
+            <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-4 mb-5">
+              <div className="relative mb-3 bg-gray-750 rounded-xl border border-gray-700 focus-within:border-green-500 transition-colors">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                 {inlineSuggestion && searchTerm && (
                   <span
@@ -945,33 +780,31 @@ const ShoppingListApp = () => {
                     setInlineSuggestion(getInlineCompletion(newVal));
                   }}
                   onKeyDown={(e) => {
-                    if (inlineSuggestion) {
-                      if (e.key === 'Tab' || e.key === 'ArrowRight') {
-                        e.preventDefault();
-                        setSearchTerm(inlineSuggestion);
-                        setInlineSuggestion(null);
-                        return;
-                      }
-                      if (e.key === 'Escape') { setInlineSuggestion(null); return; }
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleAddInkopItem(inlineSuggestion);
-                        setInlineSuggestion(null);
-                        return;
-                      }
+                    // Ghost-text autocomplete is only accepted with Tab / →.
+                    if (inlineSuggestion && (e.key === 'Tab' || e.key === 'ArrowRight')) {
+                      e.preventDefault();
+                      setSearchTerm(inlineSuggestion);
+                      setInlineSuggestion(null);
+                      return;
                     }
-                    if (e.key === 'Enter') handleAddInkopItem();
+                    if (e.key === 'Escape') { setInlineSuggestion(null); return; }
+                    // Enter always adds exactly what was typed — never the ghost suggestion.
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddInkopItem();
+                      setInlineSuggestion(null);
+                    }
                   }}
                   placeholder="Vad ska du handla?"
-                  className="relative w-full bg-transparent text-white pl-10 pr-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                  className="relative w-full bg-transparent text-white pl-10 pr-4 py-3 rounded-xl focus:outline-none"
                 />
                 {suggestions.length > 0 && searchTerm && (
-                  <div className="absolute w-full bg-gray-700 mt-1 rounded-lg shadow-lg overflow-hidden z-20 border border-gray-600">
+                  <div className="absolute w-full bg-gray-750 mt-2 rounded-xl shadow-card overflow-hidden z-20 border border-gray-700">
                     {suggestions.map((suggestion, idx) => (
                       <button
                         key={idx}
                         onClick={() => handleAddInkopItem(suggestion.name)}
-                        className="w-full px-4 py-3 text-left hover:bg-gray-600 flex items-center border-b border-gray-600 last:border-b-0"
+                        className="w-full px-4 py-3 text-left hover:bg-gray-700 flex items-center border-b border-gray-700 last:border-b-0"
                       >
                         <span className="font-medium">{suggestion.name}</span>
                       </button>
@@ -981,7 +814,7 @@ const ShoppingListApp = () => {
               </div>
               <button
                 onClick={() => handleAddInkopItem()}
-                className="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                className="w-full bg-green-600 hover:bg-green-500 active:scale-[0.99] text-white px-6 py-2.5 rounded-xl font-semibold transition-all flex items-center justify-center gap-2"
               >
                 <Plus className="w-5 h-5" />
                 Lägg till
@@ -990,28 +823,32 @@ const ShoppingListApp = () => {
 
             {/* Inköp List */}
             {inkopList.items.length === 0 ? (
-              <div className="text-center py-12 text-gray-500">
-                <ShoppingCart className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                <p>Din inköpslista är tom</p>
-                <p className="text-sm mt-2">Börja lägga till varor ovan</p>
+              <div className="text-center py-16 text-gray-500">
+                <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
+                  <ShoppingCart className="w-10 h-10 opacity-60" />
+                </div>
+                <p className="font-medium text-gray-400">Din inköpslista är tom</p>
+                <p className="text-sm mt-1">Börja lägga till varor ovan</p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {inkopList.items.filter(i => !i.checked).length > 0 && (
-                  <div className="bg-gray-800 rounded-lg overflow-hidden">
-                    <div className="divide-y divide-gray-700">
+                  <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 overflow-hidden">
+                    <div className="divide-y divide-gray-750">
                       {[...inkopList.items.filter(i => !i.checked)].sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt)).map(item => (
-                        <div key={item.id} className="px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors">
+                        <div key={item.id} className="group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors">
                           <button
                             onClick={() => toggleInkopCheck(item.id)}
-                            className="flex-shrink-0 w-6 h-6 rounded border-2 border-gray-600 hover:border-green-500 flex items-center justify-center transition-colors"
+                            aria-label="Bocka av"
+                            className="flex-shrink-0 w-7 h-7 rounded-full border-2 border-gray-600 hover:border-green-400 flex items-center justify-center transition-all active:scale-90"
                           />
-                          <span className="flex-grow font-medium">{item.name}</span>
+                          <span className="flex-grow min-w-0 truncate font-medium">{item.name}</span>
                           <button
                             onClick={() => deleteInkopItem(item.id)}
-                            className="flex-shrink-0 p-2 hover:bg-gray-600 rounded-lg transition-colors"
+                            aria-label="Ta bort"
+                            className="flex-shrink-0 p-2 rounded-lg text-gray-500 hover:text-red-400 hover:bg-gray-700 transition-colors md:opacity-0 md:group-hover:opacity-100"
                           >
-                            <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-400" />
+                            <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
                       ))}
@@ -1020,21 +857,21 @@ const ShoppingListApp = () => {
                 )}
 
                 {inkopList.items.filter(i => i.checked).length > 0 && (
-                  <div className="bg-gray-800 rounded-lg overflow-hidden">
+                  <div className="bg-gray-800 rounded-2xl border border-gray-750 overflow-hidden">
                     <button
                       onClick={() => setCheckedExpandedShopping(prev => !prev)}
-                      className="w-full px-4 py-3 flex items-center justify-between text-gray-400 hover:bg-gray-700 transition-colors"
+                      className="w-full px-4 py-3 flex items-center justify-between text-gray-400 hover:bg-gray-750 transition-colors"
                     >
                       <span>{inkopList.items.filter(i => i.checked).length} köpta varor</span>
                       {checkedExpandedShopping ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                     </button>
                     {checkedExpandedShopping && (
-                      <div className="divide-y divide-gray-700 border-t border-gray-700">
+                      <div className="divide-y divide-gray-750 border-t border-gray-750">
                         {inkopList.items.filter(i => i.checked).map(item => (
                           <div key={item.id} className="px-4 py-3 flex items-center gap-3">
                             <button
                               onClick={() => toggleInkopCheck(item.id)}
-                              className="flex-shrink-0 w-6 h-6 rounded border-2 bg-green-500 border-green-500 flex items-center justify-center"
+                              className="flex-shrink-0 w-7 h-7 rounded-full border-2 bg-green-500 border-green-500 flex items-center justify-center"
                             >
                               <Check className="w-4 h-4 text-white" />
                             </button>
@@ -1053,24 +890,24 @@ const ShoppingListApp = () => {
 
       {/* Invite Modal */}
       {showInviteModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold">Scanna för att gå med</h3>
               <button
                 onClick={() => setShowInviteModal(false)}
-                className="p-1 hover:bg-gray-700 rounded"
+                className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
             <div className="flex justify-center mb-3">
-              <div ref={qrRef} className="bg-white p-2 rounded" />
+              <div ref={qrRef} className="bg-white p-3 rounded-2xl" />
             </div>
             <p className="text-center text-gray-400 text-sm mb-4">Scanna med kameran – öppnas direkt i Safari</p>
             <button
               onClick={() => setShowInviteModal(false)}
-              className="w-full bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-lg transition-colors"
+              className="w-full bg-gray-700 hover:bg-gray-600 text-white py-2.5 rounded-xl transition-colors"
             >
               Stäng
             </button>
@@ -1083,10 +920,11 @@ const ShoppingListApp = () => {
         <div
           ref={dropdownRef}
           style={{ position: 'fixed', top: dropdownPosition.top, left: dropdownPosition.left }}
-          className="bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-48"
+          className="bg-gray-800 border border-gray-700 rounded-xl shadow-card z-50 min-w-52 overflow-hidden py-1"
         >
           {categories.map(cat => {
             const editingItem = activeList.items.find(i => i.id === editingCategoryId);
+            const meta = categoryMeta[cat] || categoryMeta['Övrigt'];
             return (
               <button
                 key={cat}
@@ -1098,11 +936,12 @@ const ShoppingListApp = () => {
                   setEditingCategoryId(null);
                   setDropdownPosition(null);
                 }}
-                className="w-full text-left px-4 py-2 hover:bg-gray-700 text-sm flex items-center gap-2 text-white first:rounded-t-lg last:rounded-b-lg"
+                className="w-full text-left px-4 py-2 hover:bg-gray-700 text-sm flex items-center gap-2 text-white"
               >
-                <span className={`w-4 inline-block ${editingItem?.category === cat ? 'text-green-400' : ''}`}>
-                  {editingItem?.category === cat ? '✓' : ''}
+                <span className={`w-4 inline-block ${editingItem?.category === cat ? 'text-green-400' : 'text-transparent'}`}>
+                  ✓
                 </span>
+                <span>{meta.emoji}</span>
                 {cat}
               </button>
             );

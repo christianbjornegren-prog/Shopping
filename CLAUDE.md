@@ -22,6 +22,8 @@ Swedish grocery shopping list web app ("Smart inköpslista för svenska matvarub
 npm run dev        # Start dev server (localhost:5173/Shopping/)
 npm run build      # Production build to dist/
 npm run preview    # Preview production build locally
+npm test           # Run the Vitest unit suite once
+npm run test:watch # Run Vitest in watch mode
 npm run deploy     # Build + deploy to GitHub Pages
 ```
 
@@ -30,14 +32,18 @@ npm run deploy     # Build + deploy to GitHub Pages
 ```
 Shopping/
 ├── src/
-│   ├── App.jsx          # Main (and only) component - contains all app logic
-│   ├── main.jsx         # React entry point, renders <App /> into #root
-│   ├── firebase.js      # Firebase init, exports auth, googleProvider, db
-│   └── index.css        # Tailwind directives + custom styles
+│   ├── App.jsx                 # Main component - UI + Firebase wiring + app state
+│   ├── categorization.js       # Pure logic: normalize, groceryDB, matching, favourites
+│   ├── categorization.test.js  # Vitest tests for categorization + Enter behaviour
+│   ├── favorites.test.js       # Vitest tests for the quick-add favourites helper
+│   ├── main.jsx                # React entry point, renders <App /> into #root
+│   ├── firebase.js             # Firebase init, exports auth, googleProvider, db
+│   └── index.css               # Tailwind directives + custom styles
 ├── dist/                # Build output (committed for GitHub Pages)
-├── index.html           # SPA entry point (lang="sv")
+├── index.html           # SPA entry point (lang="sv"), loads Inter font
 ├── vite.config.js       # Vite config (base: '/Shopping/')
-├── tailwind.config.js   # Tailwind config (default theme)
+├── vitest.config.mjs    # Vitest config (Node env, src/**/*.test.js)
+├── tailwind.config.js   # Tailwind config (Inter font + refined slate-dark palette)
 ├── postcss.config.js    # PostCSS with Tailwind + Autoprefixer
 └── package.json         # Dependencies and scripts
 ```
@@ -74,11 +80,11 @@ users/{userId}/lists/active
 
 ### Smart product categorization
 
-`groceryDB` (168 items) provides a static Swedish grocery database. Each entry has `name`, `category`, `aliases` (alternate spellings/plurals), and `keywords`. Product matching uses a 4-level strategy:
+`groceryDB` (in `src/categorization.js`) is a static Swedish grocery database. Each entry has `name`, `category`, `aliases` (alternate spellings/plurals), and `keywords`. Product matching (`findProductCategory`) uses a 4-level strategy:
 
 1. Exact name match (accent-normalized)
 2. Alias match
-3. Partial/substring match
+3. Partial/substring match (guarded by minimum lengths so short fragments like "kal" don't latch onto "blomkål")
 4. Keyword match
 
 The `normalize()` function handles Swedish characters (å, ä, ö) via NFD decomposition.
@@ -105,7 +111,7 @@ These files are gitignored: `.env.development`, `.env.production`, `.env.local`
 ## Code Conventions
 
 - **No linter or formatter configured** — no ESLint, no Prettier
-- **No tests** — no test framework or test files exist
+- **Tests** — Vitest unit tests cover the pure logic in `src/categorization.js` (`*.test.js`). Run with `npm test`. There are no UI/component tests.
 - **No TypeScript** — plain JavaScript with JSX
 - **Tailwind for all styling** — no CSS modules, no styled-components
 - **Dark theme throughout** — gray-900 background, gray-800 cards, green-500/600 accents
