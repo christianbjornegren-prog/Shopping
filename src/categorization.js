@@ -382,6 +382,20 @@ export const topProducts = (history, limit = 10) => {
     .slice(0, limit);
 };
 
+// Record a manual category correction in the purchase history so future adds
+// of the same product remember it. Matches an existing entry case/accent-
+// insensitively (reusing normalize) and only overrides its category, keeping
+// count/lastPurchased. Creates a count:0 entry when none exists yet (won't show
+// in favourites/top lists, which filter count > 0, but lets the next add pick
+// up the corrected category).
+export const setHistoryCategory = (history, name, category) => {
+  const current = history || {};
+  const existingKey = Object.keys(current).find(k => normalize(k) === normalize(name));
+  const key = existingKey || name;
+  const existing = current[key] || { count: 0 };
+  return { ...current, [key]: { ...existing, category: category || '' } };
+};
+
 // Turn an email into a short friendly first name: the first token before
 // "@" or any . _ - separator, capitalised. Keeps axis labels short so they
 // don't get clipped (e.g. "christian.bjornegren@x" -> "Christian").

@@ -8,6 +8,7 @@ import {
   byCategory,
   topProducts,
   displayName,
+  setHistoryCategory,
   WEEKDAY_LABELS
 } from './categorization.js';
 
@@ -111,5 +112,32 @@ describe('displayName', () => {
   it('falls back to Okänd for empty input', () => {
     expect(displayName('')).toBe('Okänd');
     expect(displayName(undefined)).toBe('Okänd');
+  });
+});
+
+describe('setHistoryCategory', () => {
+  it('overrides the category of an existing entry but keeps count/lastPurchased', () => {
+    const history = { Grönsak: { category: 'Fryst', count: 3, lastPurchased: 123 } };
+    const result = setHistoryCategory(history, 'Grönsak', 'Frukt & Grönt');
+    expect(result.Grönsak).toEqual({ category: 'Frukt & Grönt', count: 3, lastPurchased: 123 });
+  });
+
+  it('matches existing entries case- and accent-insensitively', () => {
+    const history = { Grönsak: { category: 'Fryst', count: 2 } };
+    const result = setHistoryCategory(history, 'gronsak', 'Frukt & Grönt');
+    // Updates the existing "Grönsak" key, does not create a new one.
+    expect(Object.keys(result)).toEqual(['Grönsak']);
+    expect(result.Grönsak.category).toBe('Frukt & Grönt');
+    expect(result.Grönsak.count).toBe(2);
+  });
+
+  it('creates a count:0 entry when the product is not in history yet', () => {
+    const result = setHistoryCategory({}, 'Tofu', 'Kött & Fisk');
+    expect(result.Tofu).toEqual({ category: 'Kött & Fisk', count: 0 });
+  });
+
+  it('handles undefined history and empty category', () => {
+    const result = setHistoryCategory(undefined, 'Okänd vara', '');
+    expect(result['Okänd vara']).toEqual({ category: '', count: 0 });
   });
 });

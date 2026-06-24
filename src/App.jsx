@@ -31,7 +31,8 @@ import {
   byPerson,
   byCategory,
   topProducts,
-  displayName
+  displayName,
+  setHistoryCategory
 } from './categorization';
 
 // ===========================================================================
@@ -472,6 +473,14 @@ const ShoppingListApp = () => {
     }
   };
 
+  // Remember a manual category correction so future adds of the same product
+  // land in the right category (handleAddItem consults history first).
+  const rememberCategory = (name, category) => {
+    const updated = setHistoryCategory(userProductHistory, name, category);
+    setUserProductHistory(updated);
+    persistHistory(updated);
+  };
+
   const handleAddItem = (itemName = null, itemCategory = null) => {
     let name = itemName || searchTerm.trim();
     if (!name) return;
@@ -710,10 +719,12 @@ const ShoppingListApp = () => {
         <select
           value={item.category || ''}
           onChange={(e) => {
+            const newCat = e.target.value;
             setActiveList(prev => ({
               ...prev,
-              items: prev.items.map(i => i.id === item.id ? { ...i, category: e.target.value } : i)
+              items: prev.items.map(i => i.id === item.id ? { ...i, category: newCat } : i)
             }));
+            rememberCategory(item.name, newCat);
           }}
           className="opacity-0 absolute inset-0 w-full h-full cursor-pointer md:hidden"
         >
@@ -1204,6 +1215,7 @@ const ShoppingListApp = () => {
                     ...prev,
                     items: prev.items.map(i => i.id === editingCategoryId ? { ...i, category: cat } : i)
                   }));
+                  if (editingItem) rememberCategory(editingItem.name, cat);
                   setEditingCategoryId(null);
                   setDropdownPosition(null);
                 }}
