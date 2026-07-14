@@ -508,12 +508,16 @@ const ShoppingListApp = () => {
   const isInkopRemoteUpdate = useRef(false);
 
   // --- Toaster (replaces alert(); lightweight, auto-dismissing feedback) ---
+  // opts can be a number (duration ms) or { duration, action: { label, onClick } }.
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
-  const showToast = (message, duration = 2600) => {
+  const dismissToast = (id) => setToasts(prev => prev.filter(t => t.id !== id));
+  const showToast = (message, opts = {}) => {
+    const { duration = 2600, action = null } = typeof opts === 'number' ? { duration: opts } : opts;
     const id = ++toastIdRef.current;
-    setToasts(prev => [...prev, { id, message }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration);
+    setToasts(prev => [...prev, { id, message, action }]);
+    setTimeout(() => dismissToast(id), duration);
+    return id;
   };
 
   // --- Voice input (sv-SE): hands-free adding while cooking ---
@@ -842,10 +846,24 @@ const ShoppingListApp = () => {
   };
 
   const deleteItem = (id) => {
+    const removed = activeList.items.find(i => i.id === id);
     setActiveList(prev => ({
       ...prev,
       items: prev.items.filter(item => item.id !== id)
     }));
+    if (removed) {
+      let tid;
+      tid = showToast(`Tog bort ${removed.name}`, {
+        duration: 4500,
+        action: {
+          label: 'Ångra',
+          onClick: () => {
+            setActiveList(prev => ({ ...prev, items: [...prev.items, removed] }));
+            dismissToast(tid);
+          },
+        },
+      });
+    }
   };
 
   const toggleInkopCheck = (id) => {
@@ -858,10 +876,24 @@ const ShoppingListApp = () => {
   };
 
   const deleteInkopItem = (id) => {
+    const removed = inkopList.items.find(i => i.id === id);
     setInkopList(prev => ({
       ...prev,
       items: prev.items.filter(item => item.id !== id)
     }));
+    if (removed) {
+      let tid;
+      tid = showToast(`Tog bort ${removed.name}`, {
+        duration: 4500,
+        action: {
+          label: 'Ångra',
+          onClick: () => {
+            setInkopList(prev => ({ ...prev, items: [...prev.items, removed] }));
+            dismissToast(tid);
+          },
+        },
+      });
+    }
   };
 
   const handleLogin = async () => {
@@ -982,25 +1014,25 @@ const ShoppingListApp = () => {
       style={{ overflow: 'hidden' }}
     >
     <SwipeRow onSwipeLeft={() => toggleCheck(item.id)} onSwipeRight={() => deleteItem(item.id)}>
-      <div className="group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors">
+      <div className="group px-4 py-2.5 flex items-center gap-3 hover:bg-gray-750 transition-colors">
       <button
         onClick={() => toggleCheck(item.id)}
         aria-label={item.checked ? 'Ångra' : 'Bocka av'}
-        className={`flex-shrink-0 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all active:scale-90 ${
+        className={`flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all active:scale-90 ${
           item.checked
             ? 'bg-green-500 border-green-500'
             : 'border-gray-600 hover:border-green-400'
         }`}
       >
-        {item.checked && <Check className="w-4 h-4 text-white" />}
+        {item.checked && <Check className="w-3.5 h-3.5 text-white" />}
       </button>
 
-      <span className="flex-shrink-0 text-lg leading-none w-6 text-center" aria-hidden="true">
+      <span className="flex-shrink-0 text-base leading-none w-5 text-center" aria-hidden="true">
         {getItemEmoji(item.name, item.category)}
       </span>
 
       <div className="flex-grow min-w-0">
-        <div className="font-medium truncate">{item.name}</div>
+        <div className="text-[15px] font-medium truncate">{item.name}</div>
       </div>
 
       <div className="relative flex-shrink-0">
@@ -1653,9 +1685,17 @@ const ShoppingListApp = () => {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -10, scale: 0.95 }}
               transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-              className="bg-gray-800/95 backdrop-blur border border-gray-700 shadow-card text-white text-sm font-medium px-4 py-2.5 rounded-xl max-w-sm text-center"
+              className="pointer-events-auto bg-gray-800/95 backdrop-blur border border-gray-700 shadow-card text-white text-sm font-medium pl-4 pr-2 py-2 rounded-xl max-w-sm flex items-center gap-3"
             >
-              {t.message}
+              <span>{t.message}</span>
+              {t.action && (
+                <button
+                  onClick={() => t.action.onClick()}
+                  className="flex-shrink-0 text-green-400 font-semibold hover:text-green-300 active:scale-95 px-2 py-1 rounded-lg transition-all"
+                >
+                  {t.action.label}
+                </button>
+              )}
             </motion.div>
           ))}
         </AnimatePresence>
