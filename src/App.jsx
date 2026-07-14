@@ -37,7 +37,10 @@ import {
   parseBulkItems,
   looksLikeUrl,
   extractIngredientsFromText,
-  shoppingProgress
+  tripStats,
+  avgLeadTimeDays,
+  plannerVsShopper,
+  restockSuggestions
 } from './categorization';
 
 // ===========================================================================
@@ -228,6 +231,14 @@ const StatsView = ({ items, history }) => {
 
   const top = topProducts(history, 10).map(p => ({ name: p.name, count: p.count }));
 
+  // Derived shopping insights (all from the item log's timestamps).
+  const trips = tripStats(items);
+  const leadDays = avgLeadTimeDays(items);
+  const pvsData = Object.entries(plannerVsShopper(items))
+    .map(([email, v]) => ({ name: displayName(email), Planerat: v.planned, Handlat: v.shopped }))
+    .sort((a, b) => (b.Planerat + b.Handlat) - (a.Planerat + a.Handlat));
+  const hasShopper = pvsData.some(p => p.Handlat > 0);
+
   const hasData = totalAdded > 0 || top.length > 0;
 
   if (!hasData) {
@@ -243,10 +254,52 @@ const StatsView = ({ items, history }) => {
   return (
     <div>
       {/* Headline – endast tillagda (avbockade är 1-1 mot tillagda) */}
-      <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-5 mb-5 text-center">
+      <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 p-5 mb-4 text-center">
         <div className="text-4xl font-extrabold text-green-400"><CountUp value={totalAdded} /></div>
         <div className="text-sm text-gray-400 mt-1">varor tillagda totalt</div>
       </div>
+
+      {/* Nyckeltal om handlandet (härlett ur tidsstämplarna) */}
+      <div className="grid grid-cols-2 gap-3 mb-5">
+        <div className="bg-gray-800 rounded-2xl border border-gray-750 p-4">
+          <div className="text-2xl font-extrabold text-sky-400">{trips.trips}</div>
+          <div className="text-xs text-gray-400 mt-0.5">handelsrundor</div>
+        </div>
+        <div className="bg-gray-800 rounded-2xl border border-gray-750 p-4">
+          <div className="text-2xl font-extrabold text-sky-400">{trips.avgItemsPerTrip}</div>
+          <div className="text-xs text-gray-400 mt-0.5">varor per runda i snitt</div>
+        </div>
+        <div className="bg-gray-800 rounded-2xl border border-gray-750 p-4">
+          <div className="text-2xl font-extrabold text-green-400">{leadDays === null ? '–' : leadDays}</div>
+          <div className="text-xs text-gray-400 mt-0.5">dagar på listan i snitt</div>
+        </div>
+        <div className="bg-gray-800 rounded-2xl border border-gray-750 p-4">
+          <div className="text-2xl font-extrabold text-green-400">{trips.biggestTrip}</div>
+          <div className="text-xs text-gray-400 mt-0.5">största rundan (varor)</div>
+        </div>
+      </div>
+
+      {/* Vem bär hem kassarna? Planerat (addedBy) vs handlat (checkedBy).
+          Visas när det finns checkedBy-data (byggs upp framåt). */}
+      {hasShopper && pvsData.length > 0 && (
+        <StatCard title="🛍️ Vem bär hem kassarna?" icon={Users}>
+          <div className="flex items-center gap-4 mb-3 text-xs text-gray-400">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm" style={{ background: ADD_COLOR }} /> Planerat</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm" style={{ background: CHECK_COLOR }} /> Handlat</span>
+          </div>
+          <div style={{ width: '100%', height: Math.max(140, pvsData.length * 70) }}>
+            <ResponsiveContainer>
+              <BarChart data={pvsData} layout="vertical" margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
+                <XAxis type="number" allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="name" tick={axisTick} axisLine={false} tickLine={false} width={70} />
+                <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={tooltipStyle} />
+                <Bar dataKey="Planerat" fill={ADD_COLOR} radius={[0, 6, 6, 0]} animationDuration={900} />
+                <Bar dataKey="Handlat" fill={CHECK_COLOR} radius={[0, 6, 6, 0]} animationDuration={900} animationBegin={150} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </StatCard>
+      )}
 
       {/* --- TILLÄGG (grön): baseras på addedAt --- */}
       <StatCard title="🛒 När lägger ni till varor?" icon={Clock}>
@@ -778,14 +831,14 @@ const ShoppingListApp = () => {
       setTimeout(() => {
         setActiveList(prev => ({
           ...prev,
-          items: prev.items.map(i => i.id === id ? { ...i, checked: true, checkedAt: new Date().toISOString() } : i)
+          items: prev.items.map(i => i.id === id ? { ...i, checked: true, checkedAt: new Date().toISOString(), checkedBy: user?.email } : i)
         }));
         setFadingIds(prev => prev.filter(fid => fid !== id));
       }, 300);
     } else {
       setActiveList(prev => ({
         ...prev,
-        items: prev.items.map(i => i.id === id ? { ...i, checked: !i.checked, checkedAt: !i.checked ? new Date().toISOString() : null } : i)
+        items: prev.items.map(i => i.id === id ? { ...i, checked: !i.checked, checkedAt: !i.checked ? new Date().toISOString() : null, checkedBy: !i.checked ? user?.email : null } : i)
       }));
     }
   };
@@ -801,7 +854,7 @@ const ShoppingListApp = () => {
     setInkopList(prev => ({
       ...prev,
       items: prev.items.map(item => item.id === id
-        ? { ...item, checked: !item.checked, checkedAt: !item.checked ? new Date().toISOString() : null }
+        ? { ...item, checked: !item.checked, checkedAt: !item.checked ? new Date().toISOString() : null, checkedBy: !item.checked ? user?.email : null }
         : item)
     }));
   };
@@ -916,6 +969,10 @@ const ShoppingListApp = () => {
     () => [...(activeList.items || []), ...(inkopList.items || [])],
     [activeList.items, inkopList.items]
   );
+
+  // Predicted restocks: regularly-bought items that are due again and not
+  // already on the list. Turns the purchase history into one-tap re-adds.
+  const restock = useMemo(() => restockSuggestions(statsItems), [statsItems]);
 
   const renderItem = (item) => (
     <SwipeRow key={item.id} onSwipeLeft={() => toggleCheck(item.id)} onSwipeRight={() => deleteItem(item.id)}>
@@ -1223,30 +1280,29 @@ const ShoppingListApp = () => {
               </div>
             )}
 
-            {/* Shopping progress – scoped to TODAY's trip (bought-earlier items
-                are excluded so the bar is actually meaningful). */}
-            {(() => {
-              const p = shoppingProgress(activeList.items);
-              if (p.total === 0) return null;
-              return (
-                <div className="mb-4">
-                  <div className="flex justify-between items-center text-xs mb-1.5 px-1">
-                    <span className="text-gray-400">
-                      {p.remaining === 0
-                        ? 'Allt avbockat idag 🎉'
-                        : `${p.remaining} kvar att handla`}
-                    </span>
-                    <span className="font-semibold text-green-400">{p.pct}%</span>
-                  </div>
-                  <div className="relative h-2 rounded-full bg-gray-800 overflow-hidden">
-                    <div
-                      className={`relative overflow-hidden h-full rounded-full bg-gradient-to-r from-green-500 to-green-400 transition-all duration-500 ${p.pct > 0 && p.pct < 100 ? 'chr-shimmer' : ''}`}
-                      style={{ width: `${p.pct}%` }}
-                    />
-                  </div>
+            {/* Dags att handla igen – predicted restocks (uses purchase stats) */}
+            {!searchTerm && restock.length > 0 && (
+              <div className="mb-5">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2 px-1 flex items-center gap-1.5">
+                  <span aria-hidden="true">🔁</span> Dags att handla igen?
                 </div>
-              );
-            })()}
+                <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                  {restock.map((r) => (
+                    <button
+                      key={r.name}
+                      onClick={() => { handleAddItem(r.name, r.category); showToast(`La till ${r.name} 🔁`); }}
+                      className="flex-shrink-0 flex items-center gap-1.5 bg-gray-800 border border-green-500/30 hover:border-green-500 hover:bg-gray-750 text-sm text-gray-200 pl-3 pr-3 py-2 rounded-full transition-colors"
+                      title={`Köps ungefär var ${r.intervalDays}:e dag · ${r.daysSince} dgr sedan sist`}
+                    >
+                      <span aria-hidden="true">{getItemEmoji(r.name, r.category)}</span>
+                      <span className="whitespace-nowrap">{r.name}</span>
+                      <span className="whitespace-nowrap text-xs text-gray-500">{r.daysSince} dgr</span>
+                      <Plus className="w-3.5 h-3.5 text-green-400" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Shopping List */}
             {totalCount === 0 ? (

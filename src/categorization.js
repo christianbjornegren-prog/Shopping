@@ -518,6 +518,113 @@ export const shoppingProgress = (items, now = Date.now()) => {
   return { remaining, doneToday, total, pct };
 };
 
+// Group purchase events (items carrying checkedAt) into shopping trips:
+// consecutive buys within `gapHours` of each other count as one trip.
+export const shoppingTrips = (items, gapHours = 3) => {
+  const stamps = (items || [])
+    .filter(i => i.checkedAt)
+    .map(i => new Date(i.checkedAt).getTime())
+    .filter(t => !Number.isNaN(t))
+    .sort((a, b) => a - b);
+  if (!stamps.length) return [];
+  const gapMs = gapHours * 3600 * 1000;
+  const trips = [];
+  let start = stamps[0], prev = stamps[0], count = 1;
+  for (let i = 1; i < stamps.length; i++) {
+    if (stamps[i] - prev > gapMs) {
+      trips.push({ start, end: prev, count });
+      start = stamps[i]; count = 1;
+    } else {
+      count++;
+    }
+    prev = stamps[i];
+  }
+  trips.push({ start, end: prev, count });
+  return trips;
+};
+
+// Headline numbers about shopping trips.
+export const tripStats = (items, gapHours = 3) => {
+  const trips = shoppingTrips(items, gapHours);
+  const totalBought = trips.reduce((s, t) => s + t.count, 0);
+  const count = trips.length;
+  return {
+    trips: count,
+    totalBought,
+    avgItemsPerTrip: count ? Math.round((totalBought / count) * 10) / 10 : 0,
+    biggestTrip: trips.reduce((m, t) => Math.max(m, t.count), 0),
+  };
+};
+
+// Average number of days an item waits on the list between added and bought.
+export const avgLeadTimeDays = (items) => {
+  const spans = (items || [])
+    .filter(i => i.addedAt && i.checkedAt)
+    .map(i => new Date(i.checkedAt).getTime() - new Date(i.addedAt).getTime())
+    .filter(ms => Number.isFinite(ms) && ms >= 0);
+  if (!spans.length) return null;
+  const avgMs = spans.reduce((s, m) => s + m, 0) / spans.length;
+  return Math.round((avgMs / 86400000) * 10) / 10;
+};
+
+// Who plans (adds items) vs who shops (checks them off).
+export const plannerVsShopper = (items) => {
+  const out = {};
+  const bump = (email, key) => {
+    if (!email) return;
+    if (!out[email]) out[email] = { planned: 0, shopped: 0 };
+    out[email][key] += 1;
+  };
+  (items || []).forEach(i => {
+    if (i.addedBy) bump(i.addedBy, 'planned');
+    if (i.checkedBy) bump(i.checkedBy, 'shopped');
+  });
+  return out;
+};
+
+// Predict which products are due to buy again, from how regularly they've been
+// bought before (median gap between purchases). Uses the item log itself as the
+// purchase history (each buy is an item with checkedAt). Excludes anything
+// already on the current list.
+export const restockSuggestions = (items, now = Date.now(), { limit = 6, minPurchases = 3 } = {}) => {
+  const day = 86400000;
+  const byName = {};
+  (items || []).forEach(i => {
+    if (!i.checkedAt) return;
+    const t = new Date(i.checkedAt).getTime();
+    if (Number.isNaN(t)) return;
+    const key = normalize(i.name || '');
+    if (!key) return;
+    if (!byName[key]) byName[key] = { name: i.name, category: i.category || '', times: [] };
+    byName[key].times.push(t);
+  });
+  const onList = new Set((items || []).filter(i => !i.checked).map(i => normalize(i.name || '')));
+  const out = [];
+  Object.entries(byName).forEach(([key, p]) => {
+    if (onList.has(key)) return;
+    const times = p.times.sort((a, b) => a - b);
+    if (times.length < minPurchases) return;
+    const gaps = [];
+    for (let i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
+    gaps.sort((a, b) => a - b);
+    const median = gaps[Math.floor(gaps.length / 2)];
+    if (!median || median <= 0) return;
+    const intervalDays = median / day;
+    if (intervalDays > 60) return; // too irregular to predict
+    const daysSince = (now - times[times.length - 1]) / day;
+    const dueness = daysSince / intervalDays;
+    if (dueness < 0.8) return; // not due yet
+    out.push({
+      name: p.name,
+      category: p.category,
+      intervalDays: Math.round(intervalDays),
+      daysSince: Math.round(daysSince),
+      dueness,
+    });
+  });
+  return out.sort((a, b) => b.dueness - a.dueness).slice(0, limit);
+};
+
 // ---------------------------------------------------------------------------
 // Analytics helpers (pure) – power the "Statistik" tab fun-facts.
 // All functions take the raw item arrays (activeList.items + inkopList.items)
