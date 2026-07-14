@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp } from 'lucide-react';
+import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp, Mic, ClipboardList, Share2, Copy } from 'lucide-react';
+import confetti from 'canvas-confetti';
 import {
   ResponsiveContainer,
   BarChart,
@@ -32,7 +33,8 @@ import {
   byCategory,
   topProducts,
   displayName,
-  setHistoryCategory
+  setHistoryCategory,
+  parseBulkItems
 } from './categorization';
 
 // ===========================================================================
@@ -376,6 +378,69 @@ const ShoppingListApp = () => {
   const inkopLoaded = useRef(false);
   const isInkopRemoteUpdate = useRef(false);
 
+  // --- Toaster (replaces alert(); lightweight, auto-dismissing feedback) ---
+  const [toasts, setToasts] = useState([]);
+  const toastIdRef = useRef(0);
+  const showToast = (message, duration = 2600) => {
+    const id = ++toastIdRef.current;
+    setToasts(prev => [...prev, { id, message }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration);
+  };
+
+  // --- Voice input (sv-SE): hands-free adding while cooking ---
+  const SpeechRecognitionCtor = typeof window !== 'undefined'
+    ? (window.SpeechRecognition || window.webkitSpeechRecognition)
+    : null;
+  const voiceSupported = !!SpeechRecognitionCtor;
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef(null);
+  const startVoice = (target) => {
+    if (!SpeechRecognitionCtor) { showToast('Röstinmatning stöds inte här'); return; }
+    if (isListening) { try { recognitionRef.current?.stop(); } catch (_) {} return; }
+    try {
+      const rec = new SpeechRecognitionCtor();
+      rec.lang = 'sv-SE';
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      rec.continuous = false;
+      rec.onstart = () => setIsListening(true);
+      rec.onerror = () => setIsListening(false);
+      rec.onend = () => setIsListening(false);
+      rec.onresult = (e) => {
+        const transcript = Array.from(e.results).map(r => r[0].transcript).join(' ');
+        const names = parseBulkItems(transcript, { conjunctions: true });
+        if (!names.length) { showToast('Hörde inget – försök igen'); return; }
+        names.forEach(n => target === 'inkop' ? handleAddInkopItem(n) : handleAddItem(n));
+        showToast(`La till ${names.length} ${names.length === 1 ? 'vara' : 'varor'} 🎙️`);
+      };
+      recognitionRef.current = rec;
+      rec.start();
+    } catch (_) { setIsListening(false); showToast('Kunde inte starta rösten'); }
+  };
+
+  // --- Bulk paste / recipe import: paste a list, add it all at once ---
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const submitBulk = () => {
+    const names = parseBulkItems(bulkText);
+    if (!names.length) { showToast('Inget att lägga till'); return; }
+    names.forEach(n => activeTab === 'inkop' ? handleAddInkopItem(n) : handleAddItem(n));
+    showToast(`La till ${names.length} ${names.length === 1 ? 'vara' : 'varor'} 📋`);
+    setBulkText('');
+    setShowBulkModal(false);
+  };
+
+  // --- Share the join link (native share sheet, else copy to clipboard) ---
+  const shareInvite = async () => {
+    const url = `https://christianbjornegren-prog.github.io/Shopping/?join=${listId}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: 'CHRELIN inköpslista', text: 'Gå med i vår inköpslista 🛒', url }); } catch (_) {}
+      return;
+    }
+    try { await navigator.clipboard.writeText(url); showToast('Länk kopierad 📋'); }
+    catch (_) { showToast('Kunde inte kopiera länken'); }
+  };
+
   // Quick-add favourites derived from purchase history (most-bought first),
   // excluding items already on the current list.
   const favorites = getFavorites(userProductHistory, activeList.items, 8);
@@ -552,6 +617,7 @@ const ShoppingListApp = () => {
   const toggleCheck = (id) => {
     const item = activeList.items.find(i => i.id === id);
     if (item && !item.checked) {
+      navigator.vibrate?.(12);
       setFadingIds(prev => [...prev, id]);
       setTimeout(() => {
         setActiveList(prev => ({
@@ -596,7 +662,7 @@ const ShoppingListApp = () => {
       await signInWithPopup(auth, googleProvider);
     } catch (error) {
       console.error('Login error:', error);
-      alert('Kunde inte logga in: ' + error.message);
+      showToast('Kunde inte logga in – försök igen');
     }
   };
 
@@ -646,6 +712,23 @@ const ShoppingListApp = () => {
       .catch(err => console.error('Error saving inköp list:', err));
   }, [inkopList, user, listId]);
 
+  // Celebrate the moment the whole active list is checked off.
+  const allCheckedRef = useRef(false);
+  useEffect(() => {
+    const total = activeList.items.length;
+    const checked = activeList.items.filter(i => i.checked).length;
+    const done = total > 0 && checked === total;
+    if (done && !allCheckedRef.current) {
+      confetti({
+        particleCount: 130, spread: 75, startVelocity: 42, origin: { y: 0.65 },
+        colors: ['#22c55e', '#34d971', '#a3e635', '#ffffff'],
+      });
+      navigator.vibrate?.([18, 40, 18]);
+      showToast('Allt avbockat – klart! 🎉', 3400);
+    }
+    allCheckedRef.current = done;
+  }, [activeList.items]);
+
   useEffect(() => {
     if (!editingCategoryId || !dropdownPosition) return;
     const handleMouseDown = (e) => {
@@ -678,7 +761,7 @@ const ShoppingListApp = () => {
   );
 
   const renderItem = (item) => (
-    <div key={item.id} className={`group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
+    <div key={item.id} className={`chr-item-in group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
       <button
         onClick={() => toggleCheck(item.id)}
         aria-label={item.checked ? 'Ångra' : 'Bocka av'}
@@ -763,7 +846,7 @@ const ShoppingListApp = () => {
   // Show login screen if not logged in
   if (!user) {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+      <div className="min-h-screen chr-app-bg flex items-center justify-center p-4">
         <div className="bg-gray-800 rounded-3xl shadow-card border border-gray-750 p-8 max-w-md w-full text-center">
           <div className="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-green-500 to-green-700 flex items-center justify-center shadow-lg">
             <ShoppingCart className="w-10 h-10 text-white" />
@@ -788,7 +871,7 @@ const ShoppingListApp = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white">
+    <div className="min-h-screen chr-app-bg text-white">
       {/* Header */}
       <div className="bg-gray-850/90 backdrop-blur border-b border-gray-750 sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-4 py-3">
@@ -906,8 +989,30 @@ const ShoppingListApp = () => {
                       }
                     }}
                     placeholder="Vad ska du handla?"
-                    className="relative w-full bg-transparent text-white pl-10 pr-4 py-3 rounded-xl focus:outline-none"
+                    className="relative w-full bg-transparent text-white pl-10 pr-20 py-3 rounded-xl focus:outline-none"
                   />
+                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 z-10">
+                    {voiceSupported && (
+                      <button
+                        type="button"
+                        onClick={() => startVoice('active')}
+                        aria-label="Lägg till med rösten"
+                        title="Lägg till med rösten"
+                        className={`p-2 rounded-lg transition-colors ${isListening ? 'text-red-400 bg-red-500/10 chr-listening' : 'text-gray-400 hover:text-green-400 hover:bg-gray-700'}`}
+                      >
+                        <Mic className="w-5 h-5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowBulkModal(true)}
+                      aria-label="Klistra in flera varor"
+                      title="Klistra in flera varor"
+                      className="p-2 rounded-lg text-gray-400 hover:text-green-400 hover:bg-gray-700 transition-colors"
+                    >
+                      <ClipboardList className="w-5 h-5" />
+                    </button>
+                  </div>
 
                   {suggestions.length > 0 && searchTerm && (
                     <div className="absolute w-full bg-gray-750 mt-2 rounded-xl shadow-card overflow-hidden z-20 border border-gray-700">
@@ -955,6 +1060,22 @@ const ShoppingListApp = () => {
                       <Plus className="w-3.5 h-3.5 text-green-400" />
                     </button>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Shopping progress */}
+            {totalCount > 0 && (
+              <div className="mb-4">
+                <div className="flex justify-between items-center text-xs mb-1.5 px-1">
+                  <span className="text-gray-400">{checkedCount} av {totalCount} avbockat</span>
+                  <span className="font-semibold text-green-400">{Math.round((checkedCount / totalCount) * 100)}%</span>
+                </div>
+                <div className="relative h-2 rounded-full bg-gray-800 overflow-hidden">
+                  <div
+                    className={`relative overflow-hidden h-full rounded-full bg-gradient-to-r from-green-500 to-green-400 transition-all duration-500 ${checkedCount > 0 && checkedCount < totalCount ? 'chr-shimmer' : ''}`}
+                    style={{ width: `${(checkedCount / totalCount) * 100}%` }}
+                  />
                 </div>
               </div>
             )}
@@ -1078,8 +1199,30 @@ const ShoppingListApp = () => {
                     }
                   }}
                   placeholder="Vad ska du handla?"
-                  className="relative w-full bg-transparent text-white pl-10 pr-4 py-3 rounded-xl focus:outline-none"
+                  className="relative w-full bg-transparent text-white pl-10 pr-20 py-3 rounded-xl focus:outline-none"
                 />
+                <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 z-10">
+                  {voiceSupported && (
+                    <button
+                      type="button"
+                      onClick={() => startVoice('inkop')}
+                      aria-label="Lägg till med rösten"
+                      title="Lägg till med rösten"
+                      className={`p-2 rounded-lg transition-colors ${isListening ? 'text-red-400 bg-red-500/10 chr-listening' : 'text-gray-400 hover:text-green-400 hover:bg-gray-700'}`}
+                    >
+                      <Mic className="w-5 h-5" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowBulkModal(true)}
+                    aria-label="Klistra in flera varor"
+                    title="Klistra in flera varor"
+                    className="p-2 rounded-lg text-gray-400 hover:text-green-400 hover:bg-gray-700 transition-colors"
+                  >
+                    <ClipboardList className="w-5 h-5" />
+                  </button>
+                </div>
                 {suggestions.length > 0 && searchTerm && (
                   <div className="absolute w-full bg-gray-750 mt-2 rounded-xl shadow-card overflow-hidden z-20 border border-gray-700">
                     {suggestions.map((suggestion, idx) => (
@@ -1186,14 +1329,67 @@ const ShoppingListApp = () => {
             <div className="flex justify-center mb-3">
               <div ref={qrRef} className="bg-white p-3 rounded-2xl" />
             </div>
-            <p className="text-center text-gray-400 text-sm mb-4">Scanna med kameran – öppnas direkt i Safari</p>
+            <p className="text-center text-gray-400 text-sm mb-4">Scanna med kameran – eller dela länken</p>
+            <div className="flex gap-2 mb-2">
+              <button
+                onClick={shareInvite}
+                className="flex-1 bg-green-600 hover:bg-green-500 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold transition-all flex items-center justify-center gap-2"
+              >
+                {navigator.share ? <Share2 className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                {navigator.share ? 'Dela länk' : 'Kopiera länk'}
+              </button>
+              <button
+                onClick={() => setShowInviteModal(false)}
+                className="px-5 bg-gray-700 hover:bg-gray-600 text-white py-2.5 rounded-xl transition-colors"
+              >
+                Stäng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk paste / recipe import modal */}
+      {showBulkModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={() => setShowBulkModal(false)}>
+          <div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-1">
+              <h3 className="text-xl font-bold flex items-center gap-2"><ClipboardList className="w-5 h-5 text-green-400" /> Klistra in flera</h3>
+              <button
+                onClick={() => setShowBulkModal(false)}
+                className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-gray-400 text-sm mb-3">Klistra in ett recept eller en lista – en vara per rad eller separerade med komma. Mängder som "2 st" tas bort automatiskt.</p>
+            <textarea
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              autoFocus
+              rows={7}
+              placeholder={'2 äpplen\nmjölk\nbröd, smör\n1 kg pasta'}
+              className="w-full bg-gray-750 border border-gray-700 focus:border-green-500 rounded-xl text-white p-3 text-sm resize-none focus:outline-none transition-colors"
+            />
             <button
-              onClick={() => setShowInviteModal(false)}
-              className="w-full bg-gray-700 hover:bg-gray-600 text-white py-2.5 rounded-xl transition-colors"
+              onClick={submitBulk}
+              className="w-full mt-3 bg-green-600 hover:bg-green-500 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold transition-all flex items-center justify-center gap-2"
             >
-              Stäng
+              <Plus className="w-5 h-5" />
+              Lägg till alla
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Toasts */}
+      {toasts.length > 0 && (
+        <div className="fixed top-4 inset-x-0 z-[60] flex flex-col items-center gap-2 px-4 pointer-events-none">
+          {toasts.map(t => (
+            <div key={t.id} className="chr-toast bg-gray-800/95 backdrop-blur border border-gray-700 shadow-card text-white text-sm font-medium px-4 py-2.5 rounded-xl max-w-sm text-center">
+              {t.message}
+            </div>
+          ))}
         </div>
       )}
 

@@ -434,6 +434,41 @@ export const getFavorites = (history, currentItems = [], limit = 8) => {
     .slice(0, limit);
 };
 
+// Leading list markers / quantities to strip from a pasted or spoken line so
+// "2 st mjölk", "- Bröd" and "1 kg pasta" become clean product names.
+const LEADING_QUANTITY = /^\s*\d+[\d.,]*\s*(?:st|stk|kg|hg|g|l|dl|cl|ml|pkt|paket|forp|burk(?:ar)?|flask(?:a|or)|pase|pasar|pack|kart|ask|tub|rulle|rullar|klyft(?:a|or)|skiv(?:a|or)|msk|tsk|krm|kruk(?:a|or))?\.?\s+/i;
+
+// Turn free text — a pasted recipe/ingredient list or a spoken phrase — into a
+// deduped array of clean product names. Pure so it can be unit-tested.
+//   parseBulkItems("2 äpplen\nMjölk\n- Bröd")        -> ['Äpplen','Mjölk','Bröd']
+//   parseBulkItems("mjölk och ägg", {conjunctions:true}) -> ['Mjölk','Ägg']
+// conjunctions=false (default) keeps "gott och blandat" intact for typed input;
+// voice passes conjunctions=true because people say "mjölk, ägg och bröd".
+export const parseBulkItems = (text, { conjunctions = false } = {}) => {
+  if (!text || typeof text !== 'string') return [];
+  const splitter = conjunctions
+    ? /[\n,;]+|\s+&\s+|\s+och\s+|\s+samt\s+/i
+    : /[\n,;]+|\s+&\s+/i;
+  const fragments = text.replace(/\r/g, '\n').replace(/[•·*]/g, '\n').split(splitter);
+  const seen = new Set();
+  const out = [];
+  for (let frag of fragments) {
+    if (!frag) continue;
+    frag = frag
+      .replace(/^\s*[-–—]\s*/, '')     // leading dash bullet
+      .replace(/^\s*\d+[.)]\s+/, '')   // leading "1." / "2)"
+      .replace(LEADING_QUANTITY, '')   // leading quantity + unit
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!frag || /^\d+([.,]\d+)?$/.test(frag)) continue; // empty or pure number
+    const key = normalize(frag);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(frag.charAt(0).toUpperCase() + frag.slice(1));
+  }
+  return out;
+};
+
 // ---------------------------------------------------------------------------
 // Analytics helpers (pure) – power the "Statistik" tab fun-facts.
 // All functions take the raw item arrays (activeList.items + inkopList.items)
