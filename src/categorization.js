@@ -469,6 +469,55 @@ export const parseBulkItems = (text, { conjunctions = false } = {}) => {
   return out;
 };
 
+// True for something that looks like a pasteable web link.
+export const looksLikeUrl = (s) => /^https?:\/\/\S+\.\S+/i.test((s || '').trim());
+
+// Best-effort extraction of an ingredient list from recipe page text (e.g. the
+// markdown returned by a reader proxy). Finds the "Ingredienser" section and
+// collects its lines until the instructions start, then cleans them with
+// parseBulkItems. Returns [] when no ingredient section is found.
+export const extractIngredientsFromText = (text) => {
+  if (!text || typeof text !== 'string') return [];
+  const lines = text.replace(/\r/g, '\n').split('\n');
+  const startIdx = lines.findIndex(l => /ingrediens/i.test(l));
+  if (startIdx === -1) return [];
+  const stopRe = /(g[öo]r s[åa] h[äa]r|s[åa] h[äa]r g[öo]r|instruktion|tillagning|method|steps?|servera s[åa]|gör detta)/i;
+  const skipRe = /(portion|receptet|f[öo]rberedelse|n[äa]ringsv[äa]rde|kommentar|betyg|annons)/i;
+  const collected = [];
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (stopRe.test(line)) break;
+    if (/^#{1,6}\s/.test(line) && collected.length > 0) break; // next markdown heading
+    if (/^!?\[/.test(line) || /^https?:\/\//i.test(line)) continue; // links/images
+    if (skipRe.test(line)) continue;
+    collected.push(line);
+    if (collected.length > 60) break; // safety cap
+  }
+  return parseBulkItems(collected.join('\n'));
+};
+
+// Progress for the CURRENT shopping trip. Because checked items are never
+// purged (they pile up as "köpta varor"), all-time progress is meaningless –
+// it's always ~100%. So we scope to today: how many of today's relevant items
+// (still-unchecked + checked today) are done. Resets naturally each day.
+const sameLocalDay = (aMs, bMs) => {
+  const a = new Date(aMs), b = new Date(bMs);
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+};
+export const shoppingProgress = (items, now = Date.now()) => {
+  const list = items || [];
+  const remaining = list.filter(i => !i.checked).length;
+  const doneToday = list.filter(i => {
+    if (!i.checked || !i.checkedAt) return false;
+    const t = new Date(i.checkedAt).getTime();
+    return !Number.isNaN(t) && sameLocalDay(t, now);
+  }).length;
+  const total = remaining + doneToday;
+  const pct = total > 0 ? Math.round((doneToday / total) * 100) : 0;
+  return { remaining, doneToday, total, pct };
+};
+
 // ---------------------------------------------------------------------------
 // Analytics helpers (pure) – power the "Statistik" tab fun-facts.
 // All functions take the raw item arrays (activeList.items + inkopList.items)

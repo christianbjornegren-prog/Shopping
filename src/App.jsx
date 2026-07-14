@@ -34,7 +34,10 @@ import {
   topProducts,
   displayName,
   setHistoryCategory,
-  parseBulkItems
+  parseBulkItems,
+  looksLikeUrl,
+  extractIngredientsFromText,
+  shoppingProgress
 } from './categorization';
 
 // ===========================================================================
@@ -124,6 +127,79 @@ const SimpleBars = ({ data, color, empty }) => (
     </ResponsiveContainer>
   </div>
 );
+
+// Touch-swipe wrapper for a list row: swipe LEFT = klart (check off),
+// swipe RIGHT = ta bort (delete). Falls back gracefully on desktop (the
+// checkbox/trash buttons still work). Only engages once a mostly-horizontal
+// drag is detected, so vertical scrolling is never hijacked.
+const SWIPE_THRESHOLD = 72;
+const SwipeRow = ({ onSwipeLeft, onSwipeRight, children }) => {
+  const [dx, setDx] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const dxRef = useRef(0);
+  const startRef = useRef({ x: 0, y: 0, active: false, axis: null });
+
+  const onTouchStart = (e) => {
+    const t = e.touches[0];
+    startRef.current = { x: t.clientX, y: t.clientY, active: true, axis: null };
+  };
+  const onTouchMove = (e) => {
+    const s = startRef.current;
+    if (!s.active) return;
+    const t = e.touches[0];
+    const ddx = t.clientX - s.x;
+    const ddy = t.clientY - s.y;
+    if (s.axis === null) {
+      if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+      s.axis = Math.abs(ddx) > Math.abs(ddy) ? 'h' : 'v';
+    }
+    if (s.axis === 'v') return; // let the list scroll vertically
+    // dampen past the threshold so it feels springy, cap the travel
+    const capped = Math.max(-140, Math.min(140, ddx));
+    dxRef.current = capped;
+    setDragging(true);
+    setDx(capped);
+  };
+  const endDrag = () => {
+    const s = startRef.current;
+    if (!s.active) return;
+    s.active = false;
+    const d = dxRef.current;
+    setDragging(false);
+    dxRef.current = 0;
+    setDx(0);
+    if (d <= -SWIPE_THRESHOLD) onSwipeLeft?.();
+    else if (d >= SWIPE_THRESHOLD) onSwipeRight?.();
+  };
+
+  const leftIntensity = Math.min(1, Math.max(0, dx) / SWIPE_THRESHOLD);   // dragging right → delete
+  const rightIntensity = Math.min(1, Math.max(0, -dx) / SWIPE_THRESHOLD); // dragging left → done
+
+  return (
+    <div className="relative overflow-hidden">
+      {/* Right edge: revealed when swiping LEFT → klart */}
+      <div className="absolute inset-y-0 right-0 flex items-center gap-1.5 pr-5 bg-green-600 text-white font-semibold"
+        style={{ left: 0, opacity: rightIntensity, justifyContent: 'flex-end' }}>
+        <Check className="w-5 h-5" /> Klart
+      </div>
+      {/* Left edge: revealed when swiping RIGHT → ta bort */}
+      <div className="absolute inset-y-0 left-0 flex items-center gap-1.5 pl-5 bg-red-600 text-white font-semibold"
+        style={{ right: 0, opacity: leftIntensity }}>
+        <Trash2 className="w-5 h-5" /> Ta bort
+      </div>
+      <div
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={endDrag}
+        onTouchCancel={endDrag}
+        className="relative bg-gray-800"
+        style={{ transform: `translateX(${dx}px)`, transition: dragging ? 'none' : 'transform 0.2s ease-out' }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+};
 
 const StatsView = ({ items, history }) => {
   const addH = addsByHour(items);
@@ -396,33 +472,113 @@ const ShoppingListApp = () => {
   const recognitionRef = useRef(null);
   const startVoice = (target) => {
     if (!SpeechRecognitionCtor) { showToast('Röstinmatning stöds inte här'); return; }
-    if (isListening) { try { recognitionRef.current?.stop(); } catch (_) {} return; }
-    try {
-      const rec = new SpeechRecognitionCtor();
-      rec.lang = 'sv-SE';
-      rec.interimResults = false;
-      rec.maxAlternatives = 1;
-      rec.continuous = false;
-      rec.onstart = () => setIsListening(true);
-      rec.onerror = () => setIsListening(false);
-      rec.onend = () => setIsListening(false);
-      rec.onresult = (e) => {
-        const transcript = Array.from(e.results).map(r => r[0].transcript).join(' ');
+    // Tapping the mic again (or while already listening) stops it – prevents
+    // a stuck/hung listening session.
+    if (isListening || recognitionRef.current) {
+      try { recognitionRef.current?.stop(); } catch (_) {}
+      try { recognitionRef.current?.abort?.(); } catch (_) {}
+      recognitionRef.current = null;
+      setIsListening(false);
+      return;
+    }
+    let rec;
+    try { rec = new SpeechRecognitionCtor(); }
+    catch (_) { showToast('Kunde inte starta rösten'); return; }
+
+    let finished = false;
+    let watchdog;
+    const cleanup = () => {
+      clearTimeout(watchdog);
+      setIsListening(false);
+      if (recognitionRef.current === rec) recognitionRef.current = null;
+      try { rec.onstart = rec.onresult = rec.onerror = rec.onend = null; } catch (_) {}
+    };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      try { rec.stop(); } catch (_) {}
+      cleanup();
+    };
+
+    rec.lang = 'sv-SE';
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.continuous = false;
+    rec.onstart = () => setIsListening(true);
+    rec.onerror = (e) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      if (e?.error && e.error !== 'aborted' && e.error !== 'no-speech') showToast('Röstfel – försök igen');
+    };
+    rec.onend = () => { if (!finished) { finished = true; cleanup(); } };
+    rec.onresult = (e) => {
+      if (finished) return;
+      finished = true;
+      try {
+        const transcript = Array.from(e.results).map(r => r[0]?.transcript || '').join(' ');
         const names = parseBulkItems(transcript, { conjunctions: true });
-        if (!names.length) { showToast('Hörde inget – försök igen'); return; }
-        names.forEach(n => target === 'inkop' ? handleAddInkopItem(n) : handleAddItem(n));
-        showToast(`La till ${names.length} ${names.length === 1 ? 'vara' : 'varor'} 🎙️`);
-      };
-      recognitionRef.current = rec;
-      rec.start();
-    } catch (_) { setIsListening(false); showToast('Kunde inte starta rösten'); }
+        if (!names.length) {
+          showToast('Hörde inget – försök igen');
+        } else {
+          names.forEach(n => target === 'inkop' ? handleAddInkopItem(n) : handleAddItem(n));
+          showToast(`La till ${names.length} ${names.length === 1 ? 'vara' : 'varor'} 🎙️`);
+        }
+      } catch (_) {
+        showToast('Något gick fel med rösten');
+      } finally {
+        try { rec.stop(); } catch (_) {}
+        cleanup();
+      }
+    };
+
+    // Watchdog: never let a listening session hang forever.
+    watchdog = setTimeout(() => { try { rec.abort?.(); } catch (_) {} finish(); }, 12000);
+    recognitionRef.current = rec;
+    try { rec.start(); }
+    catch (_) { cleanup(); showToast('Kunde inte starta rösten'); }
   };
 
-  // --- Bulk paste / recipe import: paste a list, add it all at once ---
+  // --- Bulk paste / recipe import: paste a list OR a recipe link ---
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkText, setBulkText] = useState('');
-  const submitBulk = () => {
-    const names = parseBulkItems(bulkText);
+  const [bulkLoading, setBulkLoading] = useState(false);
+
+  // Read a recipe URL via a reader proxy (works around CORS) and pull out its
+  // ingredient list. Best-effort: falls back to asking the user to paste.
+  const fetchIngredientsFromUrl = async (url) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch('https://r.jina.ai/' + url, { signal: controller.signal });
+      if (!res.ok) throw new Error('bad response');
+      const text = await res.text();
+      return extractIngredientsFromText(text);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const submitBulk = async () => {
+    const text = bulkText.trim();
+    if (!text) { showToast('Inget att lägga till'); return; }
+
+    let names;
+    if (looksLikeUrl(text)) {
+      setBulkLoading(true);
+      try {
+        names = await fetchIngredientsFromUrl(text);
+      } catch (_) {
+        setBulkLoading(false);
+        showToast('Kunde inte läsa länken – klistra in texten istället');
+        return;
+      }
+      setBulkLoading(false);
+      if (!names.length) { showToast('Hittade inga ingredienser – klistra in dem istället'); return; }
+    } else {
+      names = parseBulkItems(text);
+    }
+
     if (!names.length) { showToast('Inget att lägga till'); return; }
     names.forEach(n => activeTab === 'inkop' ? handleAddInkopItem(n) : handleAddItem(n));
     showToast(`La till ${names.length} ${names.length === 1 ? 'vara' : 'varor'} 📋`);
@@ -712,13 +868,14 @@ const ShoppingListApp = () => {
       .catch(err => console.error('Error saving inköp list:', err));
   }, [inkopList, user, listId]);
 
-  // Celebrate the moment the whole active list is checked off.
-  const allCheckedRef = useRef(false);
+  // Celebrate the moment the last unchecked item gets checked off. Tracks the
+  // unchecked count and fires only on a real >0 → 0 transition, so it never
+  // triggers just from loading an already-bought list.
+  const prevUncheckedRef = useRef(null);
   useEffect(() => {
-    const total = activeList.items.length;
-    const checked = activeList.items.filter(i => i.checked).length;
-    const done = total > 0 && checked === total;
-    if (done && !allCheckedRef.current) {
+    const unchecked = activeList.items.filter(i => !i.checked).length;
+    const prev = prevUncheckedRef.current;
+    if (prev !== null && prev > 0 && unchecked === 0) {
       confetti({
         particleCount: 130, spread: 75, startVelocity: 42, origin: { y: 0.65 },
         colors: ['#22c55e', '#34d971', '#a3e635', '#ffffff'],
@@ -726,7 +883,7 @@ const ShoppingListApp = () => {
       navigator.vibrate?.([18, 40, 18]);
       showToast('Allt avbockat – klart! 🎉', 3400);
     }
-    allCheckedRef.current = done;
+    prevUncheckedRef.current = unchecked;
   }, [activeList.items]);
 
   useEffect(() => {
@@ -761,7 +918,8 @@ const ShoppingListApp = () => {
   );
 
   const renderItem = (item) => (
-    <div key={item.id} className={`chr-item-in group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
+    <SwipeRow key={item.id} onSwipeLeft={() => toggleCheck(item.id)} onSwipeRight={() => deleteItem(item.id)}>
+      <div className={`chr-item-in group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
       <button
         onClick={() => toggleCheck(item.id)}
         aria-label={item.checked ? 'Ångra' : 'Bocka av'}
@@ -825,7 +983,8 @@ const ShoppingListApp = () => {
       >
         <Trash2 className="w-4 h-4" />
       </button>
-    </div>
+      </div>
+    </SwipeRow>
   );
 
   const formatDate = (isoString) => {
@@ -1064,21 +1223,30 @@ const ShoppingListApp = () => {
               </div>
             )}
 
-            {/* Shopping progress */}
-            {totalCount > 0 && (
-              <div className="mb-4">
-                <div className="flex justify-between items-center text-xs mb-1.5 px-1">
-                  <span className="text-gray-400">{checkedCount} av {totalCount} avbockat</span>
-                  <span className="font-semibold text-green-400">{Math.round((checkedCount / totalCount) * 100)}%</span>
+            {/* Shopping progress – scoped to TODAY's trip (bought-earlier items
+                are excluded so the bar is actually meaningful). */}
+            {(() => {
+              const p = shoppingProgress(activeList.items);
+              if (p.total === 0) return null;
+              return (
+                <div className="mb-4">
+                  <div className="flex justify-between items-center text-xs mb-1.5 px-1">
+                    <span className="text-gray-400">
+                      {p.remaining === 0
+                        ? 'Allt avbockat idag 🎉'
+                        : `${p.remaining} kvar att handla`}
+                    </span>
+                    <span className="font-semibold text-green-400">{p.pct}%</span>
+                  </div>
+                  <div className="relative h-2 rounded-full bg-gray-800 overflow-hidden">
+                    <div
+                      className={`relative overflow-hidden h-full rounded-full bg-gradient-to-r from-green-500 to-green-400 transition-all duration-500 ${p.pct > 0 && p.pct < 100 ? 'chr-shimmer' : ''}`}
+                      style={{ width: `${p.pct}%` }}
+                    />
+                  </div>
                 </div>
-                <div className="relative h-2 rounded-full bg-gray-800 overflow-hidden">
-                  <div
-                    className={`relative overflow-hidden h-full rounded-full bg-gradient-to-r from-green-500 to-green-400 transition-all duration-500 ${checkedCount > 0 && checkedCount < totalCount ? 'chr-shimmer' : ''}`}
-                    style={{ width: `${(checkedCount / totalCount) * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Shopping List */}
             {totalCount === 0 ? (
@@ -1349,10 +1517,11 @@ const ShoppingListApp = () => {
         </div>
       )}
 
-      {/* Bulk paste / recipe import modal */}
+      {/* Bulk paste / recipe import modal – top-aligned + scrollable so the
+          iOS keyboard never clips the header. */}
       {showBulkModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={() => setShowBulkModal(false)}>
-          <div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start justify-center p-4 pt-12 z-50 overflow-y-auto" onClick={() => !bulkLoading && setShowBulkModal(false)}>
+          <div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full my-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-1">
               <h3 className="text-xl font-bold flex items-center gap-2"><ClipboardList className="w-5 h-5 text-green-400" /> Klistra in flera</h3>
               <button
@@ -1362,21 +1531,23 @@ const ShoppingListApp = () => {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <p className="text-gray-400 text-sm mb-3">Klistra in ett recept eller en lista – en vara per rad eller separerade med komma. Mängder som "2 st" tas bort automatiskt.</p>
+            <p className="text-gray-400 text-sm mb-3">Klistra in en lista (en vara per rad eller kommaseparerat) <span className="text-gray-300">eller en länk till ett recept</span>. Mängder som "2 st" tas bort automatiskt.</p>
             <textarea
               value={bulkText}
               onChange={(e) => setBulkText(e.target.value)}
               autoFocus
-              rows={7}
-              placeholder={'2 äpplen\nmjölk\nbröd, smör\n1 kg pasta'}
+              rows={6}
+              placeholder={'2 äpplen\nmjölk\nbröd, smör\n\neller: https://ica.se/recept/...'}
               className="w-full bg-gray-750 border border-gray-700 focus:border-green-500 rounded-xl text-white p-3 text-sm resize-none focus:outline-none transition-colors"
             />
             <button
               onClick={submitBulk}
-              className="w-full mt-3 bg-green-600 hover:bg-green-500 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold transition-all flex items-center justify-center gap-2"
+              disabled={bulkLoading}
+              className="w-full mt-3 bg-green-600 hover:bg-green-500 active:scale-[0.99] disabled:opacity-60 disabled:active:scale-100 text-white py-2.5 rounded-xl font-semibold transition-all flex items-center justify-center gap-2"
             >
-              <Plus className="w-5 h-5" />
-              Lägg till alla
+              {bulkLoading
+                ? (<><span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Läser recept…</>)
+                : (<><Plus className="w-5 h-5" /> Lägg till alla</>)}
             </button>
           </div>
         </div>
