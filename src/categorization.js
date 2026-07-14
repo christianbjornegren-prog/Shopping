@@ -270,9 +270,137 @@ export const resolveAddName = (typedText, _ghostSuggestion) => {
   return (typedText || '').trim();
 };
 
-// Pick the best emoji for a list item: the product's own emoji when known,
-// otherwise the category's emoji, otherwise the "Osorterat" fallback. Custom
-// free-text items (e.g. "runda mackor") fall back to their category emoji.
+// Ordered keyword → emoji table, used as a fallback when a product is not an
+// exact groceryDB match. This is what gives free-text items and compound words
+// a good emoji ("Ananas" → 🍍, "Baguette" → 🥖, "Frysta köttbullar" → 🍖,
+// "Havrepuffar" → 🥣). Needles are written already-normalized (å/ä/ö → a/a/o).
+//
+// Matching (see matchesEmojiKeyword) is WORD-AWARE: a needle matches when a word
+// in the name equals it, starts with it, or ends with it — so "kokosmjolk" ends
+// with "mjolk", "kycklingfile" starts with "kyckling", but "nappflaska" is NOT
+// matched by "lask". Multi-word needles match as a raw substring.
+//
+// ORDER MATTERS: the first matching needle wins, so specific terms come before
+// the generic ones they contain. The GUARDS block at the top holds terms that a
+// later generic needle would otherwise mis-catch (e.g. "vitlok" before "lok",
+// "kottbull" before "kott", "gris"/"sparris" before "ris").
+export const EMOJI_KEYWORDS = [
+  // --- GUARDS (must precede the generic needles they'd collide with) ---
+  ['vattenmelon', '🍉'], ['kokosmjolk', '🥥'], ['mandelmjolk', '🥛'], ['havremjolk', '🥛'],
+  ['havredryck', '🥛'], ['sojadryck', '🥛'], ['pepparkak', '🍪'], ['mandelmjol', '🌾'],
+  ['balsamico', '🫒'], ['disksvamp', '🧽'], ['soppas', '🗑️'], ['sparris', '🥬'],
+  ['gris', '🥩'], ['fiskfars', '🐟'], ['kottbull', '🍖'], ['graslok', '🌿'],
+  ['vitlok', '🧄'], ['purjolok', '🧅'], ['rodlok', '🧅'], ['salladslok', '🧅'],
+  ['graddost', '🧀'], ['smorgas', '🥪'], ['mack', '🥪'], ['macka', '🥪'],
+  ['kanelbull', '🥐'], ['tekaka', '🍞'], ['pannkak', '🥞'], ['kladdkak', '🍰'],
+  ['sockerkak', '🍰'], ['kexchoklad', '🍫'], ['flaskfile', '🥩'], ['oxfile', '🥩'],
+
+  // --- Frukt & bär ---
+  ['ananas', '🍍'], ['jordgubb', '🍓'], ['hallon', '🍓'], ['smultron', '🍓'],
+  ['blabar', '🫐'], ['lingon', '🫐'], ['vinbar', '🫐'], ['bjornbar', '🫐'], ['tranbar', '🫐'],
+  ['fikon', '🫐'], ['vindruv', '🍇'], ['druv', '🍇'], ['russin', '🍇'], ['melon', '🍈'],
+  ['apelsin', '🍊'], ['clementin', '🍊'], ['mandarin', '🍊'], ['citron', '🍋'], ['lime', '🍋'],
+  ['banan', '🍌'], ['apple', '🍎'], ['paron', '🍐'], ['persika', '🍑'], ['nektarin', '🍑'],
+  ['aprikos', '🍑'], ['korsbar', '🍒'], ['mango', '🥭'], ['papaya', '🥭'], ['avokado', '🥑'],
+  ['kiwi', '🥝'], ['kokos', '🥥'],
+
+  // --- Grönsaker ---
+  ['tomat', '🍅'], ['gurka', '🥒'], ['zucchini', '🥒'], ['zuccini', '🥒'], ['squash', '🥒'],
+  ['paprika', '🫑'], ['chili', '🌶️'], ['jalapeno', '🌶️'], ['majs', '🌽'], ['morot', '🥕'],
+  ['moro', '🥕'], ['palsternack', '🥕'], ['potatis', '🥔'], ['brocc', '🥦'], ['blomkal', '🥦'],
+  ['gronkal', '🥬'], ['rodkal', '🥬'], ['vitkal', '🥬'], ['spetskal', '🥬'], ['savojkal', '🥬'],
+  ['brysselkal', '🥬'], ['salladskal', '🥬'], ['sallad', '🥬'], ['spenat', '🥬'], ['ruccola', '🥬'],
+  ['rucola', '🥬'], ['mangold', '🥬'], ['selleri', '🥬'], ['aubergin', '🍆'], ['champinjon', '🍄'],
+  ['kantarell', '🍄'], ['portabell', '🍄'], ['svamp', '🍄'], ['ingefar', '🫚'], ['oliv', '🫒'],
+  ['arter', '🫛'], ['artor', '🫛'], ['bonor', '🫘'], ['linser', '🫘'], ['kikart', '🫘'], ['lok', '🧅'],
+
+  // --- Örter & kryddor ---
+  ['basilika', '🌿'], ['persilja', '🌿'], ['koriander', '🌿'], ['dill', '🌿'], ['timjan', '🌿'],
+  ['rosmarin', '🌿'], ['mynta', '🌿'], ['salvia', '🌿'], ['oregano', '🌿'], ['dragon', '🌿'],
+  ['pesto', '🌿'], ['kanel', '🧂'], ['kardemumma', '🧂'], ['saffran', '🧂'], ['vanilj', '🧂'],
+  ['gurkmeja', '🧂'], ['spiskummin', '🧂'], ['curry', '🧂'], ['krydda', '🧂'], ['peppar', '🧂'],
+  ['salt', '🧂'],
+
+  // --- Mejeri & ägg ---
+  ['mjolk', '🥛'], ['gradde', '🥛'], ['gradd', '🥛'], ['fraiche', '🥛'], ['filmjolk', '🥛'],
+  ['filbunke', '🥛'], ['yoghurt', '🥛'], ['yogurt', '🥛'], ['kvarg', '🥛'], ['smor', '🧈'],
+  ['bregott', '🧈'], ['margarin', '🧈'], ['mozzarella', '🧀'], ['fetaost', '🧀'], ['halloumi', '🧀'],
+  ['parmesan', '🧀'], ['cheddar', '🧀'], ['brieost', '🧀'], ['gorgonzola', '🧀'], ['philadelphia', '🧀'],
+  ['farskost', '🧀'], ['prastost', '🧀'], ['herrgardsost', '🧀'], ['keso', '🧀'], ['cottage', '🧀'],
+  ['agg', '🥚'],
+
+  // --- Kött, fågel & fisk ---
+  ['kyckling', '🍗'], ['kalkon', '🍗'], ['bacon', '🥓'], ['korv', '🌭'], ['chorizo', '🍖'],
+  ['salami', '🍖'], ['skinka', '🍖'], ['kassler', '🍖'], ['kotlett', '🍖'], ['revben', '🍖'],
+  ['karre', '🍖'], ['kottfars', '🥩'], ['fars', '🥩'], ['biff', '🥩'], ['entrecote', '🥩'],
+  ['notkott', '🥩'], ['kott', '🥩'], ['stek', '🥩'], ['lax', '🐟'], ['torsk', '🐟'], ['sill', '🐟'],
+  ['makrill', '🐟'], ['sej', '🐟'], ['tonfisk', '🐟'], ['rodspatta', '🐟'], ['fiskpinn', '🐟'],
+  ['fisk', '🐟'], ['rakor', '🦐'], ['skaldjur', '🦐'], ['krabb', '🦀'], ['hummer', '🦞'],
+  ['krafta', '🦞'], ['mussl', '🦪'], ['ostron', '🦪'], ['pastej', '🥫'],
+
+  // --- Skafferi ---
+  ['spaghetti', '🍝'], ['spagetti', '🍝'], ['pasta', '🍝'], ['makaron', '🍝'], ['penne', '🍝'],
+  ['lasagn', '🍝'], ['tagliatelle', '🍝'], ['tortellini', '🍝'], ['nudlar', '🍜'], ['noodle', '🍜'],
+  ['ramen', '🍜'], ['risotto', '🍚'], ['couscous', '🍚'], ['bulgur', '🍚'], ['quinoa', '🍚'],
+  ['ris', '🍚'], ['mjol', '🌾'], ['socker', '🍬'], ['olivolja', '🫒'], ['rapsolja', '🫒'],
+  ['matolja', '🫒'], ['olja', '🫒'], ['ketchup', '🍅'], ['tomatpure', '🍅'], ['tomatkross', '🍅'],
+  ['honung', '🍯'], ['sirap', '🍯'], ['sylt', '🍓'], ['marmelad', '🍓'], ['nutella', '🍫'],
+  ['jordnotssmor', '🥜'], ['musli', '🥣'], ['muesli', '🥣'], ['granola', '🥣'], ['flingor', '🥣'],
+  ['cornflakes', '🥣'], ['havregryn', '🥣'], ['havre', '🥣'], ['gryn', '🥣'], ['puffar', '🥣'],
+  ['grot', '🥣'], ['buljong', '🍲'], ['soppa', '🍲'], ['gryta', '🍲'], ['falafel', '🧆'],
+  ['hummus', '🥙'], ['taco', '🌮'], ['nachos', '🌮'],
+
+  // --- Bröd & bak ---
+  ['baguette', '🥖'], ['ciabatta', '🥖'], ['fralla', '🥖'], ['formbrod', '🍞'], ['limpa', '🍞'],
+  ['surdeg', '🍞'], ['rostbrod', '🍞'], ['knackebrod', '🍞'], ['knacke', '🍞'], ['kavring', '🍞'],
+  ['brod', '🍞'], ['croissant', '🥐'], ['giffel', '🥐'], ['gifflar', '🥐'], ['bulle', '🥐'],
+  ['bullar', '🥐'], ['pitabrod', '🫓'], ['pita', '🫓'], ['tortilla', '🫓'], ['wrap', '🫓'],
+  ['tunnbrod', '🫓'], ['naan', '🫓'], ['vaffl', '🧇'], ['tarta', '🍰'], ['muffins', '🧁'],
+  ['cupcake', '🧁'], ['kaka', '🍪'], ['kakor', '🍪'], ['kex', '🍪'], ['munk', '🍩'], ['donut', '🍩'],
+
+  // --- Fryst ---
+  ['glass', '🍦'], ['sorbet', '🍦'], ['gelato', '🍦'], ['pommes', '🍟'], ['klyftpotatis', '🍟'],
+  ['pizza', '🍕'],
+
+  // --- Dryck ---
+  ['kaffe', '☕'], ['espresso', '☕'], ['cappuccino', '☕'], ['juice', '🧃'], ['must', '🧃'],
+  ['saft', '🧃'], ['nektar', '🧃'], ['smoothie', '🥤'], ['milkshake', '🥤'], ['cola', '🥤'],
+  ['pepsi', '🥤'], ['fanta', '🥤'], ['sprite', '🥤'], ['zingo', '🥤'], ['trocadero', '🥤'],
+  ['festis', '🥤'], ['soda', '🥤'], ['lask', '🥤'], ['vatten', '💧'], ['ramlosa', '💧'],
+  ['loka', '💧'], ['folkol', '🍺'], ['starkol', '🍺'], ['lattol', '🍺'], ['pilsner', '🍺'],
+  ['cider', '🍺'], ['rodvin', '🍷'], ['vitvin', '🍷'], ['rosevin', '🍷'], ['champagne', '🍾'],
+  ['mousserande', '🍾'], ['tepase', '🍵'], ['ortte', '🍵'], ['gront te', '🍵'],
+
+  // --- Godis & snacks ---
+  ['choklad', '🍫'], ['marabou', '🍫'], ['godis', '🍬'], ['lakrits', '🍬'], ['gele', '🍬'],
+  ['tuggummi', '🍬'], ['klubba', '🍭'], ['chips', '🥔'], ['ostbagar', '🧀'], ['popcorn', '🍿'],
+  ['notter', '🥜'], ['jordnot', '🥜'], ['cashew', '🥜'], ['mandel', '🥜'], ['pistage', '🥜'],
+  ['valnot', '🥜'], ['hasselnot', '🥜'],
+
+  // --- Hushåll, hygien & husdjur ---
+  ['toapapper', '🧻'], ['toalettpapper', '🧻'], ['toarull', '🧻'], ['hushallspapper', '🧻'],
+  ['servett', '🧻'], ['vatservett', '🧻'], ['blojor', '👶'], ['bloja', '👶'], ['pampers', '👶'],
+  ['tvattmedel', '🧴'], ['skoljmedel', '🧴'], ['tvattkapslar', '🧴'], ['diskmedel', '🧴'],
+  ['disktablett', '🧴'], ['maskindisk', '🧴'], ['diskborste', '🧽'], ['disktrasa', '🧽'],
+  ['tval', '🧼'], ['duschcreme', '🧼'], ['duschgel', '🧼'], ['schampo', '🧴'], ['balsam', '🧴'],
+  ['tandkram', '🪥'], ['tandborste', '🪥'], ['tandtrad', '🪥'], ['munskolj', '🪥'],
+  ['deodorant', '🧴'], ['rakhyvel', '🪒'], ['rakgel', '🪒'], ['rakskum', '🪒'], ['ljus', '🕯️'],
+  ['batteri', '🔋'], ['kattmat', '🐱'], ['kattsand', '🐱'], ['kattgrus', '🐱'], ['hundmat', '🐶'],
+  ['hundgodis', '🐶'], ['valling', '🍼'], ['barnmat', '🍼'], ['modersmjolk', '🍼'], ['napp', '🍼'],
+  ['blomjord', '🪴'], ['blommor', '💐'],
+];
+
+// True when a needle matches the item name word-aware: any word equals / starts
+// with / ends with the needle. Multi-word needles fall back to substring.
+const matchesEmojiKeyword = (words, needle) => {
+  if (needle.includes(' ')) return words.join(' ').includes(needle);
+  return words.some(w => w === needle || w.startsWith(needle) || w.endsWith(needle));
+};
+
+// Pick the best emoji for a list item:
+//   1. the product's own curated emoji (exact name/alias match in groceryDB)
+//   2. the keyword table above (handles plurals, compounds, free text)
+//   3. the category's emoji, else the "Osorterat" fallback
 export const getItemEmoji = (name, category) => {
   const n = normalize((name || '').trim());
   if (n) {
@@ -280,6 +408,11 @@ export const getItemEmoji = (name, category) => {
       normalize(p.name) === n || p.aliases.some(a => normalize(a) === n)
     );
     if (product?.emoji) return product.emoji;
+
+    const words = n.split(/[^a-z0-9]+/).filter(Boolean);
+    for (const [needle, emoji] of EMOJI_KEYWORDS) {
+      if (matchesEmojiKeyword(words, needle)) return emoji;
+    }
   }
   return (categoryMeta[category] || categoryMeta['Osorterat']).emoji;
 };

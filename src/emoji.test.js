@@ -22,18 +22,46 @@ describe('getItemEmoji – product-specific emojis', () => {
   });
 });
 
-describe('getItemEmoji – fallbacks', () => {
-  it('falls back to the category emoji for a custom/free-text item', () => {
-    // The couple's own term has no product emoji → category emoji.
-    expect(getItemEmoji('Runda mackor', 'Bröd & Bakelser')).toBe(categoryMeta['Bröd & Bakelser'].emoji);
+describe('getItemEmoji – keyword fallback (free text & compounds)', () => {
+  it('resolves free-text items that are not exact DB entries', () => {
+    expect(getItemEmoji('Ananas', 'Frukt & Grönt')).toBe('🍍');
+    expect(getItemEmoji('Baguette', 'Bröd & Bakelser')).toBe('🥖');
+    expect(getItemEmoji('Havrepuffar', 'Skafferi')).toBe('🥣');
+    expect(getItemEmoji('Chips', 'Godis & Snacks')).toBe('🥔');
+    expect(getItemEmoji('Räkmacka', 'Bröd & Bakelser')).toBe('🥪');
   });
 
-  it('falls back to the category emoji for a DB product without its own emoji', () => {
-    expect(getItemEmoji('Chips', 'Godis & Snacks')).toBe(categoryMeta['Godis & Snacks'].emoji);
+  it('resolves compound words via their head noun (suffix/prefix)', () => {
+    expect(getItemEmoji('Frysta köttbullar', 'Fryst')).toBe('🍖');
+    expect(getItemEmoji('Kokosmjölk', 'Skafferi')).toBe('🥥');
+    expect(getItemEmoji('Fläskfilé', 'Kött & Fisk')).toBe('🥩');
+    expect(getItemEmoji('Kycklinglårfilé', 'Kött & Fisk')).toBe('🍗');
+  });
+
+  it('prefers the specific term over the generic one it contains', () => {
+    expect(getItemEmoji('Vitlök', 'Frukt & Grönt')).toBe('🧄'); // not 🧅
+    expect(getItemEmoji('Blomkål', 'Frukt & Grönt')).toBe('🥦');
+    expect(getItemEmoji('Vattenmelon', 'Frukt & Grönt')).toBe('🍉'); // not 🍈 / 💧
+    expect(getItemEmoji('Pepparkakor', 'Godis & Snacks')).toBe('🍪'); // not 🧂
+    expect(getItemEmoji('Sparris', 'Frukt & Grönt')).toBe('🥬'); // not 🍚 (ris)
+  });
+
+  it('does not mis-match on dangerous substrings', () => {
+    expect(getItemEmoji('Nappflaska', 'Hushåll')).toBe('🍼'); // "lask" must not hit
+    expect(getItemEmoji('Vattenflaska', 'Hushåll')).toBe('💧');
+    expect(getItemEmoji('Läsk', 'Dryck')).toBe('🥤');
+    expect(getItemEmoji('Soppåsar', 'Hushåll')).toBe('🗑️'); // not 🍲 (soppa)
+    expect(getItemEmoji('Disksvamp', 'Hushåll')).toBe('🧽'); // not 🍄 (svamp)
+  });
+});
+
+describe('getItemEmoji – fallbacks', () => {
+  it('falls back to the category emoji for a truly unknown item', () => {
+    expect(getItemEmoji('Presentkort', 'Övrigt')).toBe(categoryMeta['Övrigt'].emoji);
   });
 
   it('falls back to Osorterat for an uncategorised unknown item', () => {
-    expect(getItemEmoji('Något helt okänt', '')).toBe(categoryMeta['Osorterat'].emoji);
+    expect(getItemEmoji('Xyzzy blipp', '')).toBe(categoryMeta['Osorterat'].emoji);
   });
 });
 
