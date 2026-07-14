@@ -2,6 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 're
 import ReactDOM from 'react-dom';
 import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp, Mic, ClipboardList, Share2, Copy } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   ResponsiveContainer,
   BarChart,
@@ -1006,10 +1007,10 @@ const ShoppingListApp = () => {
               setEditingCategoryId(item.id);
             }
           }}
-          className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+          className={`text-xs px-2 py-1 rounded-full transition-colors ${
             item.category
-              ? 'text-gray-300 border-gray-700 bg-gray-750 hover:bg-gray-700'
-              : 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/20'
+              ? 'text-gray-500 hover:text-gray-200 hover:bg-gray-700'
+              : 'text-yellow-400 border border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/20'
           }`}
         >
           {item.category || 'Osorterat'}
@@ -1159,6 +1160,14 @@ const ShoppingListApp = () => {
 
       {/* Main Content */}
       <div className="max-w-4xl mx-auto px-4 py-6">
+        <AnimatePresence mode="wait">
+        <motion.div
+          key={activeTab}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.16, ease: 'easeOut' }}
+        >
         {activeTab === 'statistik' ? (
           <StatsView items={statsItems} history={userProductHistory} />
         ) : activeTab === 'active' ? (
@@ -1269,11 +1278,10 @@ const ShoppingListApp = () => {
                     <button
                       key={fav.name}
                       onClick={() => handleAddItem(fav.name, fav.category)}
-                      className="flex-shrink-0 flex items-center gap-1.5 bg-gray-800 border border-gray-750 hover:border-green-500 hover:bg-gray-750 text-sm text-gray-200 pl-3 pr-3 py-2 rounded-full transition-colors"
+                      className="flex-shrink-0 flex items-center gap-2 bg-gray-800/60 border border-gray-750 hover:border-green-500/60 hover:bg-gray-800 active:scale-95 text-sm text-gray-200 px-3.5 py-2 rounded-full transition-all"
                     >
                       <span aria-hidden="true">{getItemEmoji(fav.name, fav.category)}</span>
                       <span className="whitespace-nowrap">{fav.name}</span>
-                      <Plus className="w-3.5 h-3.5 text-green-400" />
                     </button>
                   ))}
                 </div>
@@ -1291,13 +1299,12 @@ const ShoppingListApp = () => {
                     <button
                       key={r.name}
                       onClick={() => { handleAddItem(r.name, r.category); showToast(`La till ${r.name} 🔁`); }}
-                      className="flex-shrink-0 flex items-center gap-1.5 bg-gray-800 border border-green-500/30 hover:border-green-500 hover:bg-gray-750 text-sm text-gray-200 pl-3 pr-3 py-2 rounded-full transition-colors"
+                      className="flex-shrink-0 flex items-center gap-2 bg-gray-800/60 border border-gray-750 hover:border-green-500/60 hover:bg-gray-800 active:scale-95 text-sm text-gray-200 px-3.5 py-2 rounded-full transition-all"
                       title={`Köps ungefär var ${r.intervalDays}:e dag · ${r.daysSince} dgr sedan sist`}
                     >
                       <span aria-hidden="true">{getItemEmoji(r.name, r.category)}</span>
                       <span className="whitespace-nowrap">{r.name}</span>
-                      <span className="whitespace-nowrap text-xs text-gray-500">{r.daysSince} dgr</span>
-                      <Plus className="w-3.5 h-3.5 text-green-400" />
+                      <span className="whitespace-nowrap text-xs text-gray-500">· {r.daysSince}d</span>
                     </button>
                   ))}
                 </div>
@@ -1535,12 +1542,20 @@ const ShoppingListApp = () => {
             )}
           </>
         )}
+        </motion.div>
+        </AnimatePresence>
       </div>
 
       {/* Invite Modal */}
+      <AnimatePresence>
       {showInviteModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full">
+        <motion.div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
+          onClick={() => setShowInviteModal(false)}>
+          <motion.div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full"
+            initial={{ opacity: 0, scale: 0.96, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.98, y: 8 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+            onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold">Scanna för att gå med</h3>
               <button
@@ -1569,15 +1584,22 @@ const ShoppingListApp = () => {
                 Stäng
               </button>
             </div>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
+      </AnimatePresence>
 
       {/* Bulk paste / recipe import modal – top-aligned + scrollable so the
           iOS keyboard never clips the header. */}
+      <AnimatePresence>
       {showBulkModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start justify-center p-4 pt-12 z-50 overflow-y-auto" onClick={() => !bulkLoading && setShowBulkModal(false)}>
-          <div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full my-auto" onClick={(e) => e.stopPropagation()}>
+        <motion.div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start justify-center p-4 pt-12 z-50 overflow-y-auto"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
+          onClick={() => !bulkLoading && setShowBulkModal(false)}>
+          <motion.div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full my-auto"
+            initial={{ opacity: 0, scale: 0.96, y: 16 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.98, y: 10 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+            onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-1">
               <h3 className="text-xl font-bold flex items-center gap-2"><ClipboardList className="w-5 h-5 text-green-400" /> Klistra in flera</h3>
               <button
@@ -1605,20 +1627,28 @@ const ShoppingListApp = () => {
                 ? (<><span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Läser recept…</>)
                 : (<><Plus className="w-5 h-5" /> Lägg till alla</>)}
             </button>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
+      </AnimatePresence>
 
       {/* Toasts */}
-      {toasts.length > 0 && (
-        <div className="fixed top-4 inset-x-0 z-[60] flex flex-col items-center gap-2 px-4 pointer-events-none">
+      <div className="fixed top-4 inset-x-0 z-[60] flex flex-col items-center gap-2 px-4 pointer-events-none">
+        <AnimatePresence>
           {toasts.map(t => (
-            <div key={t.id} className="chr-toast bg-gray-800/95 backdrop-blur border border-gray-700 shadow-card text-white text-sm font-medium px-4 py-2.5 rounded-xl max-w-sm text-center">
+            <motion.div
+              key={t.id}
+              initial={{ opacity: 0, y: -16, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.95 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+              className="bg-gray-800/95 backdrop-blur border border-gray-700 shadow-card text-white text-sm font-medium px-4 py-2.5 rounded-xl max-w-sm text-center"
+            >
               {t.message}
-            </div>
+            </motion.div>
           ))}
-        </div>
-      )}
+        </AnimatePresence>
+      </div>
 
       {/* Desktop portal dropdown */}
       {editingCategoryId && dropdownPosition && ReactDOM.createPortal(
