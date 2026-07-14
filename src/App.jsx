@@ -497,7 +497,6 @@ const ShoppingListApp = () => {
   const [inlineSuggestion, setInlineSuggestion] = useState(null);
   const inputRef = useRef(null);
   const [editingCategoryId, setEditingCategoryId] = useState(null);
-  const [fadingIds, setFadingIds] = useState([]);
   const [checkedExpanded, setCheckedExpanded] = useState(false);
   const [checkedExpandedShopping, setCheckedExpandedShopping] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState(null);
@@ -826,22 +825,20 @@ const ShoppingListApp = () => {
 
   const toggleCheck = (id) => {
     const item = activeList.items.find(i => i.id === id);
-    if (item && !item.checked) {
-      navigator.vibrate?.(12);
-      setFadingIds(prev => [...prev, id]);
-      setTimeout(() => {
-        setActiveList(prev => ({
-          ...prev,
-          items: prev.items.map(i => i.id === id ? { ...i, checked: true, checkedAt: new Date().toISOString(), checkedBy: user?.email } : i)
-        }));
-        setFadingIds(prev => prev.filter(fid => fid !== id));
-      }, 300);
-    } else {
-      setActiveList(prev => ({
-        ...prev,
-        items: prev.items.map(i => i.id === id ? { ...i, checked: !i.checked, checkedAt: !i.checked ? new Date().toISOString() : null, checkedBy: !i.checked ? user?.email : null } : i)
-      }));
-    }
+    if (item && !item.checked) navigator.vibrate?.(12);
+    // State flips immediately; the row's exit animation (AnimatePresence) plays
+    // as it leaves the visible list – no manual fade timer needed.
+    setActiveList(prev => ({
+      ...prev,
+      items: prev.items.map(i => i.id === id
+        ? {
+            ...i,
+            checked: !i.checked,
+            checkedAt: !i.checked ? new Date().toISOString() : null,
+            checkedBy: !i.checked ? user?.email : null,
+          }
+        : i)
+    }));
   };
 
   const deleteItem = (id) => {
@@ -976,8 +973,16 @@ const ShoppingListApp = () => {
   const restock = useMemo(() => restockSuggestions(statsItems), [statsItems]);
 
   const renderItem = (item) => (
-    <SwipeRow key={item.id} onSwipeLeft={() => toggleCheck(item.id)} onSwipeRight={() => deleteItem(item.id)}>
-      <div className={`chr-item-in group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors ${fadingIds.includes(item.id) ? 'opacity-0 transition-opacity duration-300' : ''}`}>
+    <motion.div
+      key={item.id}
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.22, ease: 'easeOut' }}
+      style={{ overflow: 'hidden' }}
+    >
+    <SwipeRow onSwipeLeft={() => toggleCheck(item.id)} onSwipeRight={() => deleteItem(item.id)}>
+      <div className="group px-4 py-3 flex items-center gap-3 hover:bg-gray-750 transition-colors">
       <button
         onClick={() => toggleCheck(item.id)}
         aria-label={item.checked ? 'Ångra' : 'Bocka av'}
@@ -1043,6 +1048,7 @@ const ShoppingListApp = () => {
       </button>
       </div>
     </SwipeRow>
+    </motion.div>
   );
 
   const formatDate = (isoString) => {
@@ -1329,12 +1335,14 @@ const ShoppingListApp = () => {
                     if (unsortedItems.length === 0) return null;
                     return (
                       <div className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 overflow-hidden">
-                        <div className="bg-gray-850 px-4 py-2.5 font-semibold text-yellow-400 border-b border-gray-750 flex items-center gap-2">
+                        <div className="bg-gray-850/50 px-4 py-2 text-sm font-semibold tracking-tight text-yellow-400 border-b border-gray-750/60 flex items-center gap-2">
                           <span>{categoryMeta['Osorterat'].emoji}</span>
                           Osorterat
                         </div>
                         <div className="divide-y divide-gray-750">
-                          {unsortedItems.map(item => renderItem(item))}
+                          <AnimatePresence initial={false}>
+                            {unsortedItems.map(item => renderItem(item))}
+                          </AnimatePresence>
                         </div>
                       </div>
                     );
@@ -1347,12 +1355,14 @@ const ShoppingListApp = () => {
                     const meta = categoryMeta[cat] || categoryMeta['Övrigt'];
                     return (
                       <div key={cat} className="bg-gray-800 rounded-2xl shadow-card border border-gray-750 overflow-hidden">
-                        <div className={`bg-gray-850 px-4 py-2.5 font-semibold border-b border-gray-750 flex items-center gap-2 ${meta.accent}`}>
+                        <div className={`bg-gray-850/50 px-4 py-2 text-sm font-semibold tracking-tight border-b border-gray-750/60 flex items-center gap-2 ${meta.accent}`}>
                           <span>{meta.emoji}</span>
                           {cat}
                         </div>
                         <div className="divide-y divide-gray-750">
-                          {catItems.map(item => renderItem(item))}
+                          <AnimatePresence initial={false}>
+                            {catItems.map(item => renderItem(item))}
+                          </AnimatePresence>
                         </div>
                       </div>
                     );
@@ -1549,15 +1559,16 @@ const ShoppingListApp = () => {
       {/* Invite Modal */}
       <AnimatePresence>
       {showInviteModal && (
-        <motion.div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+        <motion.div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4 z-50"
           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
           onClick={() => setShowInviteModal(false)}>
-          <motion.div className="bg-gray-800 rounded-3xl border border-gray-750 shadow-card p-6 max-w-md w-full"
-            initial={{ opacity: 0, scale: 0.96, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.98, y: 8 }}
-            transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+          <motion.div className="bg-gray-800 border-t sm:border border-gray-750 shadow-card p-6 pb-8 sm:pb-6 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl"
+            initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+            transition={{ type: 'spring', stiffness: 340, damping: 32 }}
             onClick={(e) => e.stopPropagation()}>
+            <div className="sm:hidden w-10 h-1 rounded-full bg-gray-600 mx-auto mb-4" />
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">Scanna för att gå med</h3>
+              <h3 className="text-xl font-bold tracking-tight">Scanna för att gå med</h3>
               <button
                 onClick={() => setShowInviteModal(false)}
                 className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors"
