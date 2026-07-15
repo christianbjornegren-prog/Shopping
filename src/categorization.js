@@ -294,6 +294,8 @@ export const EMOJI_KEYWORDS = [
   ['graddost', '🧀'], ['smorgas', '🥪'], ['mack', '🥪'], ['macka', '🥪'],
   ['kanelbull', '🥐'], ['tekaka', '🍞'], ['pannkak', '🥞'], ['kladdkak', '🍰'],
   ['sockerkak', '🍰'], ['kexchoklad', '🍫'], ['flaskfile', '🥩'], ['oxfile', '🥩'],
+  ['ostron', '🦪'], ['ostbagar', '🧀'], ['ostkaka', '🍰'], // before the generic "ost" → 🧀
+  ['sotpotatis', '🍠'], // before "potatis"
 
   // --- Frukt & bär ---
   ['ananas', '🍍'], ['jordgubb', '🍓'], ['hallon', '🍓'], ['smultron', '🍓'],
@@ -327,7 +329,10 @@ export const EMOJI_KEYWORDS = [
   ['bregott', '🧈'], ['margarin', '🧈'], ['mozzarella', '🧀'], ['fetaost', '🧀'], ['halloumi', '🧀'],
   ['parmesan', '🧀'], ['cheddar', '🧀'], ['brieost', '🧀'], ['gorgonzola', '🧀'], ['philadelphia', '🧀'],
   ['farskost', '🧀'], ['prastost', '🧀'], ['herrgardsost', '🧀'], ['keso', '🧀'], ['cottage', '🧀'],
-  ['agg', '🥚'],
+  // Generic: any word that is / starts with / ends with "ost" is cheese
+  // ("hushållsost", "riven ost", "grillost"…). Word-aware matching keeps
+  // "rostbröd"/"rostbiff"/"kompost" safe (they don't start or end with "ost").
+  ['ost', '🧀'], ['agg', '🥚'],
 
   // --- Kött, fågel & fisk ---
   ['kyckling', '🍗'], ['kalkon', '🍗'], ['bacon', '🥓'], ['korv', '🌭'], ['chorizo', '🍖'],
@@ -388,6 +393,16 @@ export const EMOJI_KEYWORDS = [
   ['batteri', '🔋'], ['kattmat', '🐱'], ['kattsand', '🐱'], ['kattgrus', '🐱'], ['hundmat', '🐶'],
   ['hundgodis', '🐶'], ['valling', '🍼'], ['barnmat', '🍼'], ['modersmjolk', '🍼'], ['napp', '🍼'],
   ['blomjord', '🪴'], ['blommor', '💐'],
+
+  // --- Extra coverage (rot/frukt/fisk/övrigt som annars föll på kategori-emoji) ---
+  ['rodbet', '🥕'], ['fankal', '🥬'], ['radis', '🥕'], ['haricot', '🫛'], ['rabarber', '🥬'],
+  ['plommon', '🍑'], ['passionsfrukt', '🥭'], ['dadel', '🫐'], ['dadlar', '🫐'], ['rovor', '🥕'],
+  ['skyr', '🥛'], ['kesella', '🥛'], ['langfil', '🥛'],
+  ['blodpudding', '🥩'], ['isterband', '🌭'], ['kraftor', '🦞'], ['kaviar', '🐟'], ['ansjovis', '🐟'],
+  ['sardin', '🐟'],
+  ['fond', '🍲'], ['jast', '🧁'], ['bakpulver', '🧁'], ['fron', '🌱'], ['karnor', '🌱'], ['seml', '🧁'],
+  ['wok', '🥦'], ['kombucha', '🧋'], ['dryck', '🥤'],
+  ['folie', '🧻'], ['plastpas', '🛍️'], ['lampa', '💡'],
 ];
 
 // True when a needle matches the item name word-aware: any word equals / starts

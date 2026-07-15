@@ -53,6 +53,21 @@ describe('getItemEmoji – keyword fallback (free text & compounds)', () => {
     expect(getItemEmoji('Soppåsar', 'Hushåll')).toBe('🗑️'); // not 🍲 (soppa)
     expect(getItemEmoji('Disksvamp', 'Hushåll')).toBe('🧽'); // not 🍄 (svamp)
   });
+
+  it('treats any "ost" word as cheese, without false positives', () => {
+    // The reported bug: cheese fell through to the Mejeri milk-glass emoji.
+    expect(getItemEmoji('Hushållsost', 'Mejeri')).toBe('🧀');
+    expect(getItemEmoji('Grillost', 'Mejeri')).toBe('🧀');
+    expect(getItemEmoji('Getost', 'Mejeri')).toBe('🧀');
+    expect(getItemEmoji('Prästost', 'Mejeri')).toBe('🧀');
+    expect(getItemEmoji('Riven ost', 'Mejeri')).toBe('🧀');
+    expect(getItemEmoji('Hushållsost', 'Mejeri')).not.toBe(categoryMeta['Mejeri'].emoji);
+    // "ost" must NOT hit words that merely contain it mid/other-position:
+    expect(getItemEmoji('Rostbröd', 'Bröd & Bakelser')).toBe('🍞');
+    expect(getItemEmoji('Rostbiff', 'Kött & Fisk')).toBe('🥩');
+    expect(getItemEmoji('Ostron', 'Kött & Fisk')).toBe('🦪'); // oyster, not cheese
+    expect(getItemEmoji('Rostade cashewnötter', 'Godis & Snacks')).toBe('🥜');
+  });
 });
 
 describe('getItemEmoji – fallbacks', () => {
