@@ -16,7 +16,8 @@ import {
 } from 'recharts';
 import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
-import { collection, doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, getDoc, runTransaction } from 'firebase/firestore';
+import { mergeLists, listSignature, stripUndefined, newItemId } from './sync';
 import { db } from './firebase';
 import {
   normalize,
@@ -392,14 +393,153 @@ const StatsView = ({ items, history }) => {
   );
 };
 
+// ===========================================================================
+// Shared-list sync.
+//
+// Two devices edit the same document, and a PWA can sit frozen for days and
+// wake up holding yesterday's state. A naive "write my whole list" save then
+// either resurrects items that were checked off in the meantime, or — before
+// the first load has arrived — writes an empty list over everything.
+//
+// So: we never blind-overwrite. Every write happens inside a transaction that
+// re-reads the server document and three-way merges it (see sync.js). Writes
+// are additionally gated on having a *server-confirmed* baseline for exactly
+// this document, so a client that has not loaded yet can never delete data.
+// ===========================================================================
+const SAVE_DEBOUNCE_MS = 600;
+const SAVE_RETRY_MS = 5000;
+
+const makeEmptyActiveList = () => ({ items: [], createdAt: new Date().toISOString() });
+const makeEmptyInkopList = () => ({ items: [] });
+
+const useSyncedList = (pathParts, makeEmpty) => {
+  const path = pathParts && pathParts.every(Boolean) ? pathParts.join('/') : null;
+
+  const [list, setList] = useState(makeEmpty);
+
+  const partsRef = useRef(pathParts);
+  partsRef.current = pathParts;
+  const makeEmptyRef = useRef(makeEmpty);
+  makeEmptyRef.current = makeEmpty;
+  const listRef = useRef(list);
+  listRef.current = list;
+
+  const baseRef = useRef(null);       // last server state we reconciled against
+  const serverSigRef = useRef(null);  // signature of that server state
+  const readyRef = useRef(false);     // do we have a server-confirmed baseline?
+  const saveTimer = useRef(null);
+  const retryTimer = useRef(null);
+
+  // Reset everything when the document changes (login, logout, joining a list).
+  useEffect(() => {
+    readyRef.current = false;
+    baseRef.current = null;
+    serverSigRef.current = null;
+    clearTimeout(saveTimer.current);
+    clearTimeout(retryTimer.current);
+    setList(makeEmptyRef.current());
+  }, [path]);
+
+  // Merge-on-write. Reads the current server document inside a transaction so a
+  // concurrent change can never be lost, then writes the merged result.
+  const save = useRef(null);
+  save.current = async () => {
+    const parts = partsRef.current;
+    if (!path || !parts || !readyRef.current) return;
+    if (listSignature(listRef.current) === serverSigRef.current) return;
+
+    const baseAtWrite = baseRef.current;
+    try {
+      const ref = doc(db, ...parts);
+      const merged = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        const remote = snap.exists() ? snap.data() : { items: [] };
+        const result = stripUndefined(mergeLists(baseAtWrite, listRef.current, remote));
+        tx.set(ref, { ...result, updatedAt: new Date().toISOString() });
+        return result;
+      });
+
+      baseRef.current = merged;
+      serverSigRef.current = listSignature(merged);
+      // Fold the result back in; anything the user changed mid-write is newer
+      // and survives the merge (and schedules another save).
+      setList(prev => {
+        const next = mergeLists(baseAtWrite, prev, merged);
+        return listSignature(next) === listSignature(prev) ? prev : next;
+      });
+    } catch (error) {
+      // Offline or contention: keep the edit in memory and try again. Nothing
+      // is lost because the next attempt re-merges against the server.
+      console.error('Kunde inte spara listan, försöker igen:', error);
+      clearTimeout(retryTimer.current);
+      retryTimer.current = setTimeout(() => save.current?.(), SAVE_RETRY_MS);
+    }
+  };
+
+  // Live updates. Remote data is merged into local state rather than replacing
+  // it, so edits made while a snapshot is in flight are not dropped.
+  useEffect(() => {
+    const parts = partsRef.current;
+    if (!path || !parts) return;
+    const ref = doc(db, ...parts);
+    const unsubscribe = onSnapshot(
+      ref,
+      (snap) => {
+        const fromCache = snap.metadata?.fromCache;
+        if (snap.exists()) {
+          const remote = snap.data();
+          setList(prev => {
+            const next = mergeLists(baseRef.current, prev, remote);
+            return listSignature(next) === listSignature(prev) ? prev : next;
+          });
+          // Only server-confirmed data becomes the baseline for deletes.
+          if (!fromCache) {
+            baseRef.current = remote;
+            serverSigRef.current = listSignature(remote);
+            readyRef.current = true;
+          }
+        } else if (!fromCache) {
+          baseRef.current = { items: [] };
+          serverSigRef.current = listSignature({ items: [] });
+          readyRef.current = true;
+        }
+        if (readyRef.current) save.current?.();
+      },
+      (error) => console.error('Sync-fel:', error)
+    );
+    return () => unsubscribe();
+  }, [path]);
+
+  // Debounced save whenever local state drifts from the server.
+  useEffect(() => {
+    if (!path || !readyRef.current) return;
+    if (listSignature(list) === serverSigRef.current) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => save.current?.(), SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(saveTimer.current);
+  }, [list, path]);
+
+  // Don't let pending edits die when the app is backgrounded or goes offline.
+  useEffect(() => {
+    const flush = () => save.current?.();
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+    window.addEventListener('online', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('online', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, []);
+
+  return [list, setList];
+};
+
 const ShoppingListApp = () => {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('active');
   const [listId, setListId] = useState(null);
-
-  // Refs to prevent onSnapshot → save → onSnapshot feedback loop
-  const isRemoteUpdate = useRef(false);
-  const listLoaded = useRef(false);
 
   // Listen for auth changes
   useEffect(() => {
@@ -412,7 +552,6 @@ const ShoppingListApp = () => {
   // On login: load or create user profile to get shared listId
   useEffect(() => {
     if (!user) {
-      listLoaded.current = false;
       setListId(null);
       return;
     }
@@ -448,47 +587,11 @@ const ShoppingListApp = () => {
     setup();
   }, [user]);
 
-  // Active list state
-  const [activeList, setActiveList] = useState({
-    id: Date.now(),
-    items: [],
-    createdAt: new Date().toISOString()
-  });
-
-  // Real-time sync: subscribe to shared active list via onSnapshot
-  useEffect(() => {
-    if (!user || !listId) return;
-    const listRef = doc(db, 'lists', listId);
-    const unsubscribe = onSnapshot(listRef, (docSnap) => {
-      if (docSnap.exists()) {
-        isRemoteUpdate.current = true;
-        setActiveList(docSnap.data());
-      }
-      listLoaded.current = true;
-    });
-    return () => unsubscribe();
-  }, [user, listId]);
-
-  // Save active list to Firestore on local changes (skip remote updates)
-  useEffect(() => {
-    if (!user || !listId || !listLoaded.current) return;
-    if (isRemoteUpdate.current) {
-      isRemoteUpdate.current = false;
-      return;
-    }
-    const saveList = async () => {
-      try {
-        const listRef = doc(db, 'lists', listId);
-        await setDoc(listRef, {
-          ...activeList,
-          updatedAt: new Date().toISOString()
-        });
-      } catch (error) {
-        console.error('Error saving list:', error);
-      }
-    };
-    saveList();
-  }, [activeList, user, listId]);
+  // Active list – merge-synced with Firestore (see useSyncedList above).
+  const [activeList, setActiveList] = useSyncedList(
+    user && listId ? ['lists', listId] : null,
+    makeEmptyActiveList
+  );
 
   // User's personal product history
   const [userProductHistory, setUserProductHistory] = useState({});
@@ -503,9 +606,10 @@ const ShoppingListApp = () => {
   const dropdownRef = useRef(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const qrRef = useRef(null);
-  const [inkopList, setInkopList] = useState({ id: Date.now(), items: [] });
-  const inkopLoaded = useRef(false);
-  const isInkopRemoteUpdate = useRef(false);
+  const [inkopList, setInkopList] = useSyncedList(
+    user && listId ? ['lists', listId, 'inköp', 'active'] : null,
+    makeEmptyInkopList
+  );
 
   // --- Toaster (replaces alert(); lightweight, auto-dismissing feedback) ---
   // opts can be a number (duration ms) or { duration, action: { label, onClick } }.
@@ -788,13 +892,15 @@ const ShoppingListApp = () => {
       }
     }
 
+    const now = new Date().toISOString();
     const newItem = {
-      id: Date.now(),
+      id: newItemId(),
       name,
       category: category || '',
       checked: false,
-      addedBy: user?.email,
-      addedAt: new Date().toISOString()
+      addedBy: user?.email || null,
+      addedAt: now,
+      updatedAt: now
     };
 
     setActiveList(prev => ({ ...prev, items: [...prev.items, newItem] }));
@@ -812,12 +918,14 @@ const ShoppingListApp = () => {
     if (!itemName) {
       name = name.charAt(0).toUpperCase() + name.slice(1);
     }
+    const nowIso = new Date().toISOString();
     const newItem = {
-      id: Date.now(),
+      id: newItemId(),
       name,
       checked: false,
-      addedBy: user?.email,
-      addedAt: new Date().toISOString()
+      addedBy: user?.email || null,
+      addedAt: nowIso,
+      updatedAt: nowIso
     };
     setInkopList(prev => ({ ...prev, items: [...prev.items, newItem] }));
     setSearchTerm('');
@@ -832,14 +940,16 @@ const ShoppingListApp = () => {
     if (item && !item.checked) navigator.vibrate?.(12);
     // State flips immediately; the row's exit animation (AnimatePresence) plays
     // as it leaves the visible list – no manual fade timer needed.
+    const now = new Date().toISOString();
     setActiveList(prev => ({
       ...prev,
       items: prev.items.map(i => i.id === id
         ? {
             ...i,
             checked: !i.checked,
-            checkedAt: !i.checked ? new Date().toISOString() : null,
-            checkedBy: !i.checked ? user?.email : null,
+            checkedAt: !i.checked ? now : null,
+            checkedBy: !i.checked ? (user?.email || null) : null,
+            updatedAt: now,
           }
         : i)
     }));
@@ -858,7 +968,10 @@ const ShoppingListApp = () => {
         action: {
           label: 'Ångra',
           onClick: () => {
-            setActiveList(prev => ({ ...prev, items: [...prev.items, removed] }));
+            // New id + stamp so the merge treats this as a fresh add and the
+            // pending delete can never re-remove it.
+            const restored = { ...removed, id: newItemId(), updatedAt: new Date().toISOString() };
+            setActiveList(prev => ({ ...prev, items: [...prev.items, restored] }));
             dismissToast(tid);
           },
         },
@@ -870,7 +983,13 @@ const ShoppingListApp = () => {
     setInkopList(prev => ({
       ...prev,
       items: prev.items.map(item => item.id === id
-        ? { ...item, checked: !item.checked, checkedAt: !item.checked ? new Date().toISOString() : null, checkedBy: !item.checked ? user?.email : null }
+        ? {
+            ...item,
+            checked: !item.checked,
+            checkedAt: !item.checked ? new Date().toISOString() : null,
+            checkedBy: !item.checked ? (user?.email || null) : null,
+            updatedAt: new Date().toISOString(),
+          }
         : item)
     }));
   };
@@ -888,7 +1007,8 @@ const ShoppingListApp = () => {
         action: {
           label: 'Ångra',
           onClick: () => {
-            setInkopList(prev => ({ ...prev, items: [...prev.items, removed] }));
+            const restored = { ...removed, id: newItemId(), updatedAt: new Date().toISOString() };
+            setInkopList(prev => ({ ...prev, items: [...prev.items, restored] }));
             dismissToast(tid);
           },
         },
@@ -908,11 +1028,8 @@ const ShoppingListApp = () => {
   const handleLogout = async () => {
     try {
       await signOut(auth);
+      // Clearing listId resets both synced lists (see useSyncedList).
       setListId(null);
-      listLoaded.current = false;
-      inkopLoaded.current = false;
-      setActiveList({ id: Date.now(), items: [], createdAt: new Date().toISOString() });
-      setInkopList({ id: Date.now(), items: [] });
       setUserProductHistory({});
     } catch (error) {
       console.error('Logout error:', error);
@@ -927,29 +1044,6 @@ const ShoppingListApp = () => {
       if (snap.exists()) setUserProductHistory(snap.data());
     }).catch(err => console.error('Error loading history:', err));
   }, [user, listId]);
-
-  // Subscribe to inköp list
-  useEffect(() => {
-    if (!user || !listId) return;
-    const inkopRef = doc(db, 'lists', listId, 'inköp', 'active');
-    const unsubscribe = onSnapshot(inkopRef, (docSnap) => {
-      if (docSnap.exists()) {
-        isInkopRemoteUpdate.current = true;
-        setInkopList(docSnap.data());
-      }
-      inkopLoaded.current = true;
-    });
-    return () => unsubscribe();
-  }, [user, listId]);
-
-  // Save inköp list on local changes
-  useEffect(() => {
-    if (!user || !listId || !inkopLoaded.current) return;
-    if (isInkopRemoteUpdate.current) { isInkopRemoteUpdate.current = false; return; }
-    const inkopRef = doc(db, 'lists', listId, 'inköp', 'active');
-    setDoc(inkopRef, { ...inkopList, updatedAt: new Date().toISOString() })
-      .catch(err => console.error('Error saving inköp list:', err));
-  }, [inkopList, user, listId]);
 
   // Celebrate the moment the last unchecked item gets checked off. Tracks the
   // unchecked count and fires only on a real >0 → 0 transition, so it never
@@ -1058,7 +1152,7 @@ const ShoppingListApp = () => {
             const newCat = e.target.value;
             setActiveList(prev => ({
               ...prev,
-              items: prev.items.map(i => i.id === item.id ? { ...i, category: newCat } : i)
+              items: prev.items.map(i => i.id === item.id ? { ...i, category: newCat, updatedAt: new Date().toISOString() } : i)
             }));
             rememberCategory(item.name, newCat);
           }}
@@ -1717,7 +1811,7 @@ const ShoppingListApp = () => {
                 onClick={() => {
                   setActiveList(prev => ({
                     ...prev,
-                    items: prev.items.map(i => i.id === editingCategoryId ? { ...i, category: cat } : i)
+                    items: prev.items.map(i => i.id === editingCategoryId ? { ...i, category: cat, updatedAt: new Date().toISOString() } : i)
                   }));
                   if (editingItem) rememberCategory(editingItem.name, cat);
                   setEditingCategoryId(null);
