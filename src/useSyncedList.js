@@ -34,16 +34,33 @@ export const useSyncedList = (pathParts, makeEmpty) => {
   const baseRef = useRef(null);       // last server state we reconciled against
   const serverSigRef = useRef(null);  // signature of that server state
   const readyRef = useRef(false);     // do we have a server-confirmed baseline?
+  // Same flag as state, so the UI can show "loading" instead of an empty list
+  // (an empty list looks exactly like data loss, which is not a nice guess to
+  // leave the user with).
+  const [ready, setReady] = useState(false);
   const saveTimer = useRef(null);
   const retryTimer = useRef(null);
 
-  // Reset everything when the document changes (login, logout, joining a list).
+  // Reset when the document changes (logout, joining another list).
+  //
+  // Crucially NOT when the path resolves for the first time (null -> a list):
+  // signing in takes a moment, and anything typed while we waited must survive.
+  // It has no baseline yet, so the first snapshot simply merges it in.
+  const prevPathRef = useRef(null);
   useEffect(() => {
+    const previous = prevPathRef.current;
+    prevPathRef.current = path;
+
     readyRef.current = false;
+    setReady(false);
     baseRef.current = null;
     serverSigRef.current = null;
     clearTimeout(saveTimer.current);
     clearTimeout(retryTimer.current);
+
+    const isFirstResolve = previous === null && path !== null;
+    if (isFirstResolve) return; // keep what the user has already entered
+
     const empty = makeEmptyRef.current();
     listRef.current = empty;
     setList(empty);
@@ -118,11 +135,13 @@ export const useSyncedList = (pathParts, makeEmpty) => {
             baseRef.current = remote;
             serverSigRef.current = listSignature(remote);
             readyRef.current = true;
+            setReady(true);
           }
         } else if (!fromCache) {
           baseRef.current = { items: [] };
           serverSigRef.current = listSignature({ items: [] });
           readyRef.current = true;
+          setReady(true);
         }
         // The server may now differ from what we hold without `list` changing
         // identity (e.g. it lost items we still have), which the effect below
@@ -162,5 +181,5 @@ export const useSyncedList = (pathParts, makeEmpty) => {
     };
   }, []);
 
-  return [list, setList];
+  return [list, setList, ready];
 };

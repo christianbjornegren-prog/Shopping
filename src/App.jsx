@@ -449,7 +449,7 @@ const ShoppingListApp = () => {
   }, [user]);
 
   // Active list – merge-synced with Firestore (see useSyncedList above).
-  const [activeList, setActiveList] = useSyncedList(
+  const [activeList, setActiveList, activeListReady] = useSyncedList(
     user && listId ? ['lists', listId] : null,
     makeEmptyActiveList
   );
@@ -467,7 +467,7 @@ const ShoppingListApp = () => {
   const dropdownRef = useRef(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const qrRef = useRef(null);
-  const [inkopList, setInkopList] = useSyncedList(
+  const [inkopList, setInkopList, inkopListReady] = useSyncedList(
     user && listId ? ['lists', listId, 'inköp', 'active'] : null,
     makeEmptyInkopList
   );
@@ -1306,6 +1306,14 @@ const ShoppingListApp = () => {
 
             {/* Shopping List */}
             {totalCount === 0 ? (
+              !activeListReady ? (
+              <div className="text-center py-16 text-gray-500">
+                <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
+                  <span className="w-7 h-7 border-2 border-gray-600 border-t-green-500 rounded-full animate-spin" />
+                </div>
+                <p className="font-medium text-gray-400">Hämtar din lista…</p>
+              </div>
+              ) : (
               <div className="text-center py-16 text-gray-500">
                 <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
                   <ShoppingCart className="w-10 h-10 opacity-60" />
@@ -1313,6 +1321,7 @@ const ShoppingListApp = () => {
                 <p className="font-medium text-gray-400">Din inköpslista är tom</p>
                 <p className="text-sm mt-1">Börja lägga till varor ovan</p>
               </div>
+              )
             ) : (
               <>
                 <div className="space-y-3">
@@ -1476,13 +1485,22 @@ const ShoppingListApp = () => {
 
             {/* Inköp List */}
             {inkopList.items.length === 0 ? (
-              <div className="text-center py-16 text-gray-500">
-                <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
-                  <ShoppingCart className="w-10 h-10 opacity-60" />
+              !inkopListReady ? (
+                <div className="text-center py-16 text-gray-500">
+                  <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
+                    <span className="w-7 h-7 border-2 border-gray-600 border-t-green-500 rounded-full animate-spin" />
+                  </div>
+                  <p className="font-medium text-gray-400">Hämtar din lista…</p>
                 </div>
-                <p className="font-medium text-gray-400">Din inköpslista är tom</p>
-                <p className="text-sm mt-1">Börja lägga till varor ovan</p>
-              </div>
+              ) : (
+                <div className="text-center py-16 text-gray-500">
+                  <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
+                    <ShoppingCart className="w-10 h-10 opacity-60" />
+                  </div>
+                  <p className="font-medium text-gray-400">Din inköpslista är tom</p>
+                  <p className="text-sm mt-1">Börja lägga till varor ovan</p>
+                </div>
+              )
             ) : (
               <div className="space-y-3">
                 {inkopList.items.filter(i => !i.checked).length > 0 && (

@@ -147,6 +147,55 @@ describe('REGRESSION: kapplöpningen som raderade allt', () => {
   });
 });
 
+describe('REGRESSION: vara tillagd innan listan hunnit ladda', () => {
+  it('överlever att inloggningen blir klar och hamnar på servern', async () => {
+    server.put(KEY, { items: many(2) });
+
+    // Appen startar innan auth hunnit ge oss ett listId (path = null).
+    const { result, rerender } = renderHook(
+      ({ p }) => useSyncedList(p, makeEmpty),
+      { initialProps: { p: null } }
+    );
+
+    // Användaren hinner skriva in en vara under de sekunderna.
+    act(() => {
+      result.current[1](prev => ({ ...prev, items: [...prev.items, item(99, { name: 'Kyckling' })] }));
+    });
+    expect(result.current[0].items).toHaveLength(1);
+
+    // Inloggningen blir klar och listan börjar synka.
+    rerender({ p: PATH });
+    await act(async () => { deliverInitialSnapshot(); });
+
+    // Varan finns kvar – och serverns två varor har kommit in.
+    expect(result.current[0].items.some(i => i.name === 'Kyckling')).toBe(true);
+    expect(result.current[0].items).toHaveLength(3);
+    await waitFor(() => expect(serverItems().some(i => i.id === 99)).toBe(true), { timeout: 3000 });
+  });
+
+  it('men utloggning tömmer fortfarande listan lokalt', async () => {
+    server.put(KEY, { items: many(2) });
+    const { result, rerender } = renderHook(
+      ({ p }) => useSyncedList(p, makeEmpty),
+      { initialProps: { p: PATH } }
+    );
+    await act(async () => { deliverInitialSnapshot(); });
+    expect(result.current[0].items).toHaveLength(2);
+
+    rerender({ p: null });
+    expect(result.current[0].items).toHaveLength(0);
+  });
+
+  it('signalerar när listan är laddad, så tomt inte förväxlas med dataförlust', async () => {
+    server.put(KEY, { items: many(2) });
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty));
+
+    expect(result.current[2]).toBe(false); // laddar fortfarande
+    await act(async () => { deliverInitialSnapshot(); });
+    expect(result.current[2]).toBe(true);
+  });
+});
+
 describe('useSyncedList – vanlig användning', () => {
   it('sparar en tillagd vara', async () => {
     server.put(KEY, { items: many(2) });
