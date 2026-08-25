@@ -59,6 +59,41 @@ describe('BUG: avbockade varor kom tillbaka', () => {
   });
 });
 
+describe('BUG: hela listan raderades av en kapplöpning vid start', () => {
+  // The regression that wiped both users' lists: a save fired before React had
+  // applied the freshly merged snapshot, so `local` was still the empty
+  // startup list while `base` already held the full server list. Every item
+  // then looked "deleted by the user".
+  const many = Array.from({ length: 40 }, (_, n) => item(n + 1));
+
+  it('an empty local list must never delete a full server list', () => {
+    const merged = mergeItems(many, [], many);
+    expect(merged).toHaveLength(40);
+  });
+
+  it('the same guard protects the other direction (server wiped, client intact)', () => {
+    // A client that still holds the items restores them instead of accepting
+    // the deletion – this is what lets a surviving device heal the list.
+    const merged = mergeItems(many, many, []);
+    expect(merged).toHaveLength(40);
+  });
+
+  it('still allows deleting items one at a time', () => {
+    const base = many;
+    const local = many.slice(1);            // one item removed here
+    expect(mergeItems(base, local, many)).toHaveLength(39);
+  });
+
+  it('allows a small burst of deletes but refuses a mass wipe', () => {
+    expect(mergeItems(many, many.slice(5), many)).toHaveLength(35);   // 5 deletes: allowed
+    expect(mergeItems(many, many.slice(6), many)).toHaveLength(40);   // 6: refused
+  });
+
+  it('can be opted out of explicitly', () => {
+    expect(mergeItems(many, [], many, { maxDeletes: Infinity })).toHaveLength(0);
+  });
+});
+
 describe('BUG: listan blev tom (0 varor)', () => {
   it('an unloaded/empty client never wipes the server list', () => {
     // Nothing loaded yet: no baseline, empty local state.

@@ -45,7 +45,32 @@ const indexById = (items) => {
 //                          (someone else deleted it)
 //
 // Local ordering is preserved, with remote-only additions appended.
-export const mergeItems = (base, local, remote) => {
+// The UI only ever deletes one item at a time (trash button / swipe), so a
+// merge that suddenly wants to remove a pile of items is not a user action —
+// it is a bug or a race. Refusing it turns "lose everything" into "an item
+// reappears", and lets a client that still holds the data restore it.
+export const MAX_BULK_DELETE = 5;
+
+export const mergeItems = (base, local, remote, options = {}) => {
+  const { maxDeletes = MAX_BULK_DELETE } = options;
+  const strict = mergeCore(base, local, remote);
+  if (maxDeletes === Infinity) return strict;
+
+  const kept = new Set(strict.map(i => String(i.id)));
+  const countDropped = (items) => (items || []).filter(
+    i => i && i.id !== undefined && i.id !== null && !kept.has(String(i.id))
+  ).length;
+
+  // Guard both directions: accepting a mass delete from the server, and
+  // pushing one to it.
+  if (countDropped(local) > maxDeletes || countDropped(remote) > maxDeletes) {
+    // Ignore the baseline, i.e. keep everything both sides know about.
+    return mergeCore([], local, remote);
+  }
+  return strict;
+};
+
+const mergeCore = (base, local, remote) => {
   const b = indexById(base);
   const l = indexById(local);
   const r = indexById(remote);
@@ -77,13 +102,13 @@ export const mergeItems = (base, local, remote) => {
 
 // Merge whole list documents. Server-owned fields (members/createdAt) are never
 // clobbered by a client that may be holding a stale copy.
-export const mergeLists = (baseDoc, localDoc, remoteDoc) => {
+export const mergeLists = (baseDoc, localDoc, remoteDoc, options = {}) => {
   const remote = remoteDoc || {};
   const local = localDoc || {};
   const merged = {
     ...remote,
     ...local,
-    items: mergeItems(baseDoc?.items, local.items, remote.items),
+    items: mergeItems(baseDoc?.items, local.items, remote.items, options),
   };
   if (remote.members !== undefined) merged.members = remote.members;
   if (remote.createdAt !== undefined) merged.createdAt = remote.createdAt;

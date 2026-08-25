@@ -437,7 +437,9 @@ const useSyncedList = (pathParts, makeEmpty) => {
     serverSigRef.current = null;
     clearTimeout(saveTimer.current);
     clearTimeout(retryTimer.current);
-    setList(makeEmptyRef.current());
+    const empty = makeEmptyRef.current();
+    listRef.current = empty;
+    setList(empty);
   }, [path]);
 
   // Merge-on-write. Reads the current server document inside a transaction so a
@@ -465,7 +467,9 @@ const useSyncedList = (pathParts, makeEmpty) => {
       // and survives the merge (and schedules another save).
       setList(prev => {
         const next = mergeLists(baseAtWrite, prev, merged);
-        return listSignature(next) === listSignature(prev) ? prev : next;
+        const resolved = listSignature(next) === listSignature(prev) ? prev : next;
+        listRef.current = resolved;
+        return resolved;
       });
     } catch (error) {
       // Offline or contention: keep the edit in memory and try again. Nothing
@@ -488,9 +492,14 @@ const useSyncedList = (pathParts, makeEmpty) => {
         const fromCache = snap.metadata?.fromCache;
         if (snap.exists()) {
           const remote = snap.data();
+          // listRef is kept in step with what React will actually hold, so a
+          // save can never see a pre-merge list and mistake "not loaded yet"
+          // for "the user deleted everything".
           setList(prev => {
             const next = mergeLists(baseRef.current, prev, remote);
-            return listSignature(next) === listSignature(prev) ? prev : next;
+            const resolved = listSignature(next) === listSignature(prev) ? prev : next;
+            listRef.current = resolved;
+            return resolved;
           });
           // Only server-confirmed data becomes the baseline for deletes.
           if (!fromCache) {
@@ -503,7 +512,8 @@ const useSyncedList = (pathParts, makeEmpty) => {
           serverSigRef.current = listSignature({ items: [] });
           readyRef.current = true;
         }
-        if (readyRef.current) save.current?.();
+        // No save from here: the debounced effect below fires once React has
+        // actually applied the merged state.
       },
       (error) => console.error('Sync-fel:', error)
     );
