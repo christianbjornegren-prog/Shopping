@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp, Mic, ClipboardList, Share2, Copy } from 'lucide-react';
+import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp, Mic, ClipboardList, Share2, Copy, Activity, Download, RefreshCw, CloudOff, Cloud } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -18,6 +18,7 @@ import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, onSnapshot, setDoc, getDoc, runTransaction } from 'firebase/firestore';
 import { newItemId } from './sync';
+import { getLog, subscribeLog, clearLog, logEvent, formatTime, logToText, combineStatus, STATUS_TEXT } from './syncLog';
 import { useSyncedList } from './useSyncedList';
 import { db } from './firebase';
 import {
@@ -449,9 +450,10 @@ const ShoppingListApp = () => {
   }, [user]);
 
   // Active list – merge-synced with Firestore (see useSyncedList above).
-  const [activeList, setActiveList, activeListReady] = useSyncedList(
+  const [activeList, setActiveList, activeStatus] = useSyncedList(
     user && listId ? ['lists', listId] : null,
-    makeEmptyActiveList
+    makeEmptyActiveList,
+    'Matvaror'
   );
 
   // User's personal product history
@@ -466,10 +468,17 @@ const ShoppingListApp = () => {
   const [dropdownPosition, setDropdownPosition] = useState(null);
   const dropdownRef = useRef(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
+
+  // --- Driftlogg: vad appen faktiskt gör, i klartext ---
+  const [showLog, setShowLog] = useState(false);
+  const [logEntries, setLogEntries] = useState(() => getLog());
+  useEffect(() => subscribeLog(setLogEntries), []);
+  useEffect(() => { logEvent('info', 'Appen startade'); }, []);
   const qrRef = useRef(null);
-  const [inkopList, setInkopList, inkopListReady] = useSyncedList(
+  const [inkopList, setInkopList, inkopStatus] = useSyncedList(
     user && listId ? ['lists', listId, 'inköp', 'active'] : null,
-    makeEmptyInkopList
+    makeEmptyInkopList,
+    'Inköp'
   );
 
   // --- Toaster (replaces alert(); lightweight, auto-dismissing feedback) ---
@@ -606,6 +615,48 @@ const ShoppingListApp = () => {
     showToast(`La till ${names.length} ${names.length === 1 ? 'vara' : 'varor'} 📋`);
     setBulkText('');
     setShowBulkModal(false);
+  };
+
+  // --- Din egen kopia: ladda ner listan som textfil ---
+  const exportList = () => {
+    try {
+      const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+      const section = (title, items) => [
+        `## ${title} (${items.length})`,
+        ...items.map(i => `${i.checked ? '[x]' : '[ ]'} ${i.name}${i.category ? ` — ${i.category}` : ''}`),
+        '',
+      ].join('\n');
+      const text = [
+        `CHRELIN inköpslista – kopia ${stamp}`,
+        '',
+        section('Matvaror', activeList.items || []),
+        section('Inköp', inkopList.items || []),
+      ].join('\n');
+
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `chrelin-lista-${new Date().toISOString().slice(0, 10)}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      logEvent('ok', 'Sparade en kopia av listan');
+      showToast('Kopia sparad 💾');
+    } catch (error) {
+      logEvent('error', `Kunde inte spara kopia (${error?.message || 'okänt fel'})`);
+      showToast('Kunde inte spara kopian');
+    }
+  };
+
+  const copyLog = async () => {
+    try {
+      await navigator.clipboard.writeText(logToText());
+      showToast('Logg kopierad 📋');
+    } catch (_) {
+      showToast('Kunde inte kopiera loggen');
+    }
   };
 
   // --- Share the join link (native share sheet, else copy to clipboard) ---
@@ -950,6 +1001,18 @@ const ShoppingListApp = () => {
 
   // Combined dataset for the Statistik tab: every item ever recorded across
   // both lists carries addedAt/addedBy/category (and checkedAt going forward).
+  // Ett gemensamt synkläge för hela appen (värsta läget vinner).
+  const syncStatus = useMemo(
+    () => combineStatus([activeStatus, inkopStatus]),
+    [activeStatus, inkopStatus]
+  );
+  const syncStyle = {
+    loading: { chip: 'text-gray-400 bg-gray-800 border border-gray-750' },
+    saving: { chip: 'text-sky-300 bg-sky-500/10 border border-sky-500/30' },
+    synced: { chip: 'text-green-400 bg-green-500/10 border border-green-500/30' },
+    error: { chip: 'text-red-300 bg-red-500/10 border border-red-500/30' },
+  }[syncStatus.phase] || { chip: 'text-gray-400 bg-gray-800 border border-gray-750' };
+
   const statsItems = useMemo(
     () => [...(activeList.items || []), ...(inkopList.items || [])],
     [activeList.items, inkopList.items]
@@ -1093,6 +1156,18 @@ const ShoppingListApp = () => {
               <h1 className="text-xl font-extrabold tracking-tight">CHRELIN</h1>
             </div>
             <div className="flex items-center gap-1">
+              {/* Synkstatus – alltid synlig, tryck för driftloggen */}
+              <button
+                onClick={() => setShowLog(true)}
+                title="Visa driftlogg"
+                className={`flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-full text-xs font-medium transition-colors mr-1 ${syncStyle.chip}`}
+              >
+                {syncStatus.phase === 'loading' && <span className="w-3 h-3 border-2 border-current/40 border-t-current rounded-full animate-spin" />}
+                {syncStatus.phase === 'saving' && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                {syncStatus.phase === 'synced' && <span className="w-2 h-2 rounded-full bg-current" />}
+                {syncStatus.phase === 'error' && <CloudOff className="w-3.5 h-3.5" />}
+                <span className="hidden xs:inline sm:inline">{STATUS_TEXT[syncStatus.phase]}</span>
+              </button>
               <button
                 onClick={() => setShowInviteModal(true)}
                 className="p-2.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors"
@@ -1306,7 +1381,7 @@ const ShoppingListApp = () => {
 
             {/* Shopping List */}
             {totalCount === 0 ? (
-              !activeListReady ? (
+              !activeStatus.ready ? (
               <div className="text-center py-16 text-gray-500">
                 <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
                   <span className="w-7 h-7 border-2 border-gray-600 border-t-green-500 rounded-full animate-spin" />
@@ -1485,7 +1560,7 @@ const ShoppingListApp = () => {
 
             {/* Inköp List */}
             {inkopList.items.length === 0 ? (
-              !inkopListReady ? (
+              !inkopStatus.ready ? (
                 <div className="text-center py-16 text-gray-500">
                   <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gray-800 border border-gray-750 flex items-center justify-center">
                     <span className="w-7 h-7 border-2 border-gray-600 border-t-green-500 rounded-full animate-spin" />
@@ -1643,6 +1718,92 @@ const ShoppingListApp = () => {
                 ? (<><span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Läser recept…</>)
                 : (<><Plus className="w-5 h-5" /> Lägg till alla</>)}
             </button>
+          </motion.div>
+        </motion.div>
+      )}
+      </AnimatePresence>
+
+      {/* Driftlogg */}
+      <AnimatePresence>
+      {showLog && (
+        <motion.div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4 z-50"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
+          onClick={() => setShowLog(false)}>
+          <motion.div
+            className="bg-gray-800 border-t sm:border border-gray-750 shadow-card w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl flex flex-col"
+            style={{ maxHeight: '85vh' }}
+            initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+            transition={{ type: 'spring', stiffness: 340, damping: 32 }}
+            onClick={(e) => e.stopPropagation()}>
+            <div className="sm:hidden w-10 h-1 rounded-full bg-gray-600 mx-auto mt-3" />
+            <div className="flex justify-between items-center px-6 pt-4 pb-2">
+              <h3 className="text-lg font-bold tracking-tight flex items-center gap-2">
+                <Activity className="w-5 h-5 text-green-400" /> Driftlogg
+              </h3>
+              <button
+                onClick={() => setShowLog(false)}
+                className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Nuläge */}
+            <div className="px-6 pb-3">
+              <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium ${syncStyle.chip}`}>
+                {syncStatus.phase === 'synced' ? <Cloud className="w-3.5 h-3.5" /> : null}
+                {syncStatus.phase === 'error' ? <CloudOff className="w-3.5 h-3.5" /> : null}
+                {STATUS_TEXT[syncStatus.phase]}
+              </div>
+              {syncStatus.lastSyncAt && (
+                <p className="text-xs text-gray-500 mt-2">
+                  Senast synkad {formatTime(syncStatus.lastSyncAt)} · {activeList.items.length} varor i Matvaror · {inkopList.items.length} i Inköp
+                </p>
+              )}
+            </div>
+
+            {/* Händelser */}
+            <div className="flex-1 overflow-y-auto px-6 pb-2 min-h-0">
+              {logEntries.length === 0 ? (
+                <p className="text-sm text-gray-500 py-6 text-center">Inga händelser än.</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {logEntries.map((e, i) => (
+                    <li key={`${e.t}-${i}`} className="flex gap-3 text-sm">
+                      <span className="text-gray-600 tabular-nums flex-shrink-0 text-xs pt-0.5">{formatTime(e.t)}</span>
+                      <span className={
+                        e.level === 'error' ? 'text-red-300'
+                        : e.level === 'warn' ? 'text-amber-300'
+                        : e.level === 'ok' ? 'text-green-300'
+                        : 'text-gray-300'
+                      }>{e.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* Åtgärder */}
+            <div className="flex gap-2 px-6 py-4 border-t border-gray-750">
+              <button
+                onClick={exportList}
+                className="flex-1 bg-green-600 hover:bg-green-500 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold transition-all flex items-center justify-center gap-2 text-sm"
+              >
+                <Download className="w-4 h-4" /> Spara kopia
+              </button>
+              <button
+                onClick={copyLog}
+                className="px-4 bg-gray-700 hover:bg-gray-600 text-white py-2.5 rounded-xl transition-colors text-sm flex items-center gap-2"
+              >
+                <Copy className="w-4 h-4" /> Kopiera logg
+              </button>
+              <button
+                onClick={() => { clearLog(); logEvent('info', 'Loggen rensad'); }}
+                className="px-4 bg-gray-700 hover:bg-gray-600 text-white py-2.5 rounded-xl transition-colors text-sm"
+              >
+                Rensa
+              </button>
+            </div>
           </motion.div>
         </motion.div>
       )}

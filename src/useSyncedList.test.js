@@ -71,6 +71,7 @@ vi.mock('firebase/firestore', () => ({
 }));
 
 const { useSyncedList } = await import('./useSyncedList.js');
+const { getLog, clearLog } = await import('./syncLog.js');
 
 const PATH = ['lists', 'L1'];
 const KEY = 'lists/L1';
@@ -188,11 +189,62 @@ describe('REGRESSION: vara tillagd innan listan hunnit ladda', () => {
 
   it('signalerar när listan är laddad, så tomt inte förväxlas med dataförlust', async () => {
     server.put(KEY, { items: many(2) });
-    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty));
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
 
-    expect(result.current[2]).toBe(false); // laddar fortfarande
+    expect(result.current[2].ready).toBe(false);
+    expect(result.current[2].phase).toBe('loading');
+
     await act(async () => { deliverInitialSnapshot(); });
-    expect(result.current[2]).toBe(true);
+
+    expect(result.current[2].ready).toBe(true);
+    expect(result.current[2].phase).toBe('synced');
+    expect(result.current[2].lastSyncAt).toBeTruthy();
+  });
+
+  it('skriver läsbara rader i driftloggen', async () => {
+    localStorage.clear();
+    clearLog();
+    server.put(KEY, { items: many(2) });
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    await act(async () => { deliverInitialSnapshot(); });
+
+    expect(getLog()[0].message).toBe('Matvaror: ansluten till servern – 2 varor');
+
+    act(() => {
+      result.current[1](prev => ({ ...prev, items: [...prev.items, item(99)] }));
+    });
+    await waitFor(() => expect(getLog()[0].message).toContain('sparade'), { timeout: 3000 });
+    expect(getLog()[0].message).toBe('Matvaror: sparade – 3 varor');
+  });
+
+  it('loggar när nätet fallerar och när skyddsnätet går in', async () => {
+    localStorage.clear();
+    clearLog();
+    server.put(KEY, { items: many(20) });
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    await act(async () => { deliverInitialSnapshot(); });
+
+    // Servern töms av något annat -> skyddsnätet ska stoppa det och logga.
+    await act(async () => {
+      server.put(KEY, { items: [] });
+      server.emit(KEY);
+    });
+    await waitFor(
+      () => expect(getLog().some(e => e.message.includes('skyddsnätet stoppade'))).toBe(true),
+      { timeout: 3000 }
+    );
+    expect(result.current[0].items).toHaveLength(20);
+
+    // Ett nätverksfel ska synas som ett läsbart fel.
+    server.failNextTransaction = true;
+    act(() => {
+      result.current[1](prev => ({ ...prev, items: [...prev.items, item(500)] }));
+    });
+    await waitFor(
+      () => expect(getLog().some(e => e.level === 'error' && e.message.includes('kunde inte spara'))).toBe(true),
+      { timeout: 3000 }
+    );
+    expect(result.current[2].phase).toBe('error');
   });
 });
 

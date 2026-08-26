@@ -52,7 +52,7 @@ const indexById = (items) => {
 export const MAX_BULK_DELETE = 5;
 
 export const mergeItems = (base, local, remote, options = {}) => {
-  const { maxDeletes = MAX_BULK_DELETE } = options;
+  const { maxDeletes = MAX_BULK_DELETE, onBulkDeleteRefused } = options;
   const strict = mergeCore(base, local, remote);
   if (maxDeletes === Infinity) return strict;
 
@@ -63,7 +63,11 @@ export const mergeItems = (base, local, remote, options = {}) => {
 
   // Guard both directions: accepting a mass delete from the server, and
   // pushing one to it.
-  if (countDropped(local) > maxDeletes || countDropped(remote) > maxDeletes) {
+  const refused = Math.max(countDropped(local), countDropped(remote));
+  if (refused > maxDeletes) {
+    if (onBulkDeleteRefused) {
+      try { onBulkDeleteRefused(refused); } catch (_) {}
+    }
     // Ignore the baseline, i.e. keep everything both sides know about.
     return mergeCore([], local, remote);
   }

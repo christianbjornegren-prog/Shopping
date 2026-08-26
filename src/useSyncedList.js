@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { doc, onSnapshot, runTransaction } from 'firebase/firestore';
 import { db } from './firebase';
 import { mergeLists, listSignature, stripUndefined } from './sync';
+import { logEvent } from './syncLog';
 
 // ===========================================================================
 // Shared-list sync.
@@ -19,7 +20,7 @@ import { mergeLists, listSignature, stripUndefined } from './sync';
 export const SAVE_DEBOUNCE_MS = 600;
 export const SAVE_RETRY_MS = 5000;
 
-export const useSyncedList = (pathParts, makeEmpty) => {
+export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
   const path = pathParts && pathParts.every(Boolean) ? pathParts.join('/') : null;
 
   const [list, setList] = useState(makeEmpty);
@@ -34,10 +35,14 @@ export const useSyncedList = (pathParts, makeEmpty) => {
   const baseRef = useRef(null);       // last server state we reconciled against
   const serverSigRef = useRef(null);  // signature of that server state
   const readyRef = useRef(false);     // do we have a server-confirmed baseline?
-  // Same flag as state, so the UI can show "loading" instead of an empty list
-  // (an empty list looks exactly like data loss, which is not a nice guess to
-  // leave the user with).
-  const [ready, setReady] = useState(false);
+  // Exposed to the UI so it can show what is actually going on instead of an
+  // empty list (an empty list looks exactly like data loss).
+  // phase: 'loading' | 'synced' | 'saving' | 'error'
+  const [status, setStatus] = useState({ ready: false, phase: 'loading', lastSyncAt: null });
+  const setReady = (value) => setStatus(s => ({ ...s, ready: value, phase: value ? s.phase : 'loading' }));
+  const labelRef = useRef(label);
+  labelRef.current = label;
+  const countRef = useRef(0);
   const saveTimer = useRef(null);
   const retryTimer = useRef(null);
 
@@ -75,18 +80,25 @@ export const useSyncedList = (pathParts, makeEmpty) => {
     if (listSignature(listRef.current) === serverSigRef.current) return;
 
     const baseAtWrite = baseRef.current;
+    setStatus(s => (s.phase === 'saving' ? s : { ...s, phase: 'saving' }));
     try {
       const ref = doc(db, ...parts);
       const merged = await runTransaction(db, async (tx) => {
         const snap = await tx.get(ref);
         const remote = snap.exists() ? snap.data() : { items: [] };
-        const result = stripUndefined(mergeLists(baseAtWrite, listRef.current, remote));
+        const result = stripUndefined(mergeLists(baseAtWrite, listRef.current, remote, {
+          onBulkDeleteRefused: (n) =>
+            logEvent('warn', `${labelRef.current}: skyddsnätet stoppade en massradering (${n} varor)`),
+        }));
         tx.set(ref, { ...result, updatedAt: new Date().toISOString() });
         return result;
       });
 
       baseRef.current = merged;
       serverSigRef.current = listSignature(merged);
+      const savedCount = (merged.items || []).length;
+      logEvent('ok', `${labelRef.current}: sparade – ${savedCount} varor`);
+      setStatus(s => ({ ...s, phase: 'synced', lastSyncAt: new Date().toISOString() }));
       // Fold the result back in; anything the user changed mid-write is newer
       // and survives the merge (and schedules another save).
       setList(prev => {
@@ -99,6 +111,8 @@ export const useSyncedList = (pathParts, makeEmpty) => {
       // Offline or contention: keep the edit in memory and try again. Nothing
       // is lost because the next attempt re-merges against the server.
       console.error('Kunde inte spara listan, försöker igen:', error);
+      logEvent('error', `${labelRef.current}: kunde inte spara – försöker igen (${error?.code || error?.message || 'okänt fel'})`);
+      setStatus(s => ({ ...s, phase: 'error' }));
       clearTimeout(retryTimer.current);
       retryTimer.current = setTimeout(() => save.current?.(), SAVE_RETRY_MS);
     }
@@ -116,6 +130,9 @@ export const useSyncedList = (pathParts, makeEmpty) => {
         const fromCache = snap.metadata?.fromCache;
         if (snap.exists()) {
           const remote = snap.data();
+          const remoteSig = listSignature(remote);
+          const isFirst = !readyRef.current;
+          const remoteChanged = remoteSig !== serverSigRef.current;
           // Capture the baseline BEFORE it is replaced below: React runs this
           // updater on the next render, by which time baseRef would already
           // point at `remote` — and merging against itself reads every item
@@ -125,7 +142,10 @@ export const useSyncedList = (pathParts, makeEmpty) => {
           // save can never see a pre-merge list and mistake "not loaded yet"
           // for "the user deleted everything".
           setList(prev => {
-            const next = mergeLists(baseAtMerge, prev, remote);
+            const next = mergeLists(baseAtMerge, prev, remote, {
+              onBulkDeleteRefused: (n) =>
+                logEvent('warn', `${labelRef.current}: skyddsnätet stoppade en massradering (${n} varor)`),
+            });
             const resolved = listSignature(next) === listSignature(prev) ? prev : next;
             listRef.current = resolved;
             return resolved;
@@ -133,15 +153,21 @@ export const useSyncedList = (pathParts, makeEmpty) => {
           // Only server-confirmed data becomes the baseline for deletes.
           if (!fromCache) {
             baseRef.current = remote;
-            serverSigRef.current = listSignature(remote);
+            serverSigRef.current = remoteSig;
             readyRef.current = true;
-            setReady(true);
+            const n = (remote.items || []).length;
+            if (isFirst) logEvent('ok', `${labelRef.current}: ansluten till servern – ${n} varor`);
+            else if (remoteChanged) logEvent('info', `${labelRef.current}: uppdatering från servern – ${n} varor`);
+            setStatus(s => ({ ...s, ready: true, phase: 'synced', lastSyncAt: new Date().toISOString() }));
+          } else if (isFirst) {
+            logEvent('info', `${labelRef.current}: visar sparad kopia medan servern svarar`);
           }
         } else if (!fromCache) {
           baseRef.current = { items: [] };
           serverSigRef.current = listSignature({ items: [] });
           readyRef.current = true;
-          setReady(true);
+          logEvent('info', `${labelRef.current}: ingen lista på servern än`);
+          setStatus(s => ({ ...s, ready: true, phase: 'synced', lastSyncAt: new Date().toISOString() }));
         }
         // The server may now differ from what we hold without `list` changing
         // identity (e.g. it lost items we still have), which the effect below
@@ -153,7 +179,11 @@ export const useSyncedList = (pathParts, makeEmpty) => {
           saveTimer.current = setTimeout(() => save.current?.(), SAVE_DEBOUNCE_MS);
         }
       },
-      (error) => console.error('Sync-fel:', error)
+      (error) => {
+        console.error('Sync-fel:', error);
+        logEvent('error', `${labelRef.current}: tappade kontakten (${error?.code || error?.message || 'okänt fel'})`);
+        setStatus(s => ({ ...s, phase: 'error' }));
+      }
     );
     return () => unsubscribe();
   }, [path]);
@@ -181,5 +211,5 @@ export const useSyncedList = (pathParts, makeEmpty) => {
     };
   }, []);
 
-  return [list, setList, ready];
+  return [list, setList, status];
 };
