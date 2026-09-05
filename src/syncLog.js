@@ -76,7 +76,7 @@ export const logToText = (list = getLog()) =>
 
 // Combine the per-list states into the single badge shown in the header.
 // Worst state wins, because that is the one worth surfacing.
-const RANK = { error: 4, saving: 3, loading: 2, synced: 1 };
+const RANK = { denied: 6, error: 5, saving: 4, loading: 3, cached: 2, synced: 1 };
 export const combineStatus = (statuses) => {
   const list = (statuses || []).filter(Boolean);
   if (!list.length) return { phase: 'loading', lastSyncAt: null };
@@ -88,7 +88,9 @@ export const combineStatus = (statuses) => {
 
 export const STATUS_TEXT = {
   loading: 'Hämtar…',
+  cached: 'Lokal kopia',      // on-device data shown, server has not confirmed it
   saving: 'Sparar…',
   synced: 'Synkad',
   error: 'Ingen kontakt',
+  denied: 'Åtkomst nekad',    // security rules, not signal
 };

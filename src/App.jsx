@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp, Mic, ClipboardList, Share2, Copy, Activity, Download, RefreshCw, CloudOff, Cloud } from 'lucide-react';
+import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp, Mic, ClipboardList, Share2, Copy, Activity, Download, RefreshCw, CloudOff, Cloud, Lock, HardDrive } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -17,7 +17,7 @@ import {
 import { auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, onSnapshot, setDoc, getDoc, runTransaction } from 'firebase/firestore';
-import { newItemId } from './sync';
+import { newItemId, mergeLists } from './sync';
 import { getLog, subscribeLog, clearLog, logEvent, formatTime, logToText, combineStatus, STATUS_TEXT } from './syncLog';
 import { useSyncedList } from './useSyncedList';
 import { db } from './firebase';
@@ -398,6 +398,25 @@ const StatsView = ({ items, history }) => {
 const makeEmptyActiveList = () => ({ items: [], createdAt: new Date().toISOString() });
 const makeEmptyInkopList = () => ({ items: [] });
 
+// Where each shared document lives.
+//
+// The Inköp list and the product memory used to sit in *subcollections* under
+// the list (lists/{id}/inköp/active, lists/{id}/productHistory/data). The
+// security rules deployed in Firebase only cover the list documents
+// themselves, so those paths were answered with permission-denied at every
+// start — the "Ingen kontakt" that never went away even on full WiFi. Both now
+// live as ordinary documents in the same `lists` collection as the main list,
+// which is the one path we know the rules allow. The old paths are read once
+// (if the rules ever permit it) so nothing that might still be there is lost.
+const inkopDocParts = (listId) => ['lists', `${listId}-inkop`];
+const historyDocParts = (listId) => ['lists', `${listId}-historik`];
+const LEGACY_INKOP_PARTS = (listId) => ['lists', listId, 'inköp', 'active'];
+const LEGACY_HISTORY_PARTS = (listId, uid) => [
+  ['lists', listId, 'productHistory', 'data'],
+  ['users', uid, 'productHistory', 'data'],
+];
+const describeError = (error) => error?.code || error?.message || 'okänt fel';
+
 const ShoppingListApp = () => {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('active');
@@ -499,10 +518,30 @@ const ShoppingListApp = () => {
   useEffect(() => { logEvent('info', 'Appen startade'); }, []);
   const qrRef = useRef(null);
   const [inkopList, setInkopList, inkopStatus] = useSyncedList(
-    user && listId ? ['lists', listId, 'inköp', 'active'] : null,
+    user && listId ? inkopDocParts(listId) : null,
     makeEmptyInkopList,
     'Inköp'
   );
+
+  // One-time pickup of an Inköp list left at the old (subcollection) path.
+  // Runs only once the new document is server-confirmed and still empty, so it
+  // can never overwrite anything; a merge with no baseline is a pure union.
+  const inkopMigratedRef = useRef(null);
+  useEffect(() => {
+    if (!user || !listId || !inkopStatus.ready) return;
+    if (inkopMigratedRef.current === listId) return;
+    if ((inkopList.items || []).length > 0) { inkopMigratedRef.current = listId; return; }
+    inkopMigratedRef.current = listId;
+    getDoc(doc(db, ...LEGACY_INKOP_PARTS(listId))).then(snap => {
+      const old = snap.exists() ? snap.data() : null;
+      const n = (old?.items || []).length;
+      if (!n) return;
+      setInkopList(prev => mergeLists(null, prev, { items: old.items }));
+      logEvent('info', `Inköp: hämtade ${n} varor från den gamla platsen`);
+    }).catch(error => {
+      logEvent('info', `Inköp: den gamla platsen gick inte att läsa (${describeError(error)}) – kör vidare med den nya`);
+    });
+  }, [user, listId, inkopStatus.ready, inkopList.items]);
 
   // --- Toaster (replaces alert(); lightweight, auto-dismissing feedback) ---
   // opts can be a number (duration ms) or { duration, action: { label, onClick } }.
@@ -783,10 +822,19 @@ const ShoppingListApp = () => {
     };
   };
 
+  const historyErrorLoggedRef = useRef(false);
   const persistHistory = (history) => {
     if (user && listId) {
-      const ref = doc(db, 'lists', listId, 'productHistory', 'data');
-      setDoc(ref, history, { merge: true }).catch(err => console.error('Error saving history:', err));
+      const ref = doc(db, ...historyDocParts(listId));
+      setDoc(ref, history, { merge: true })
+        .then(() => { historyErrorLoggedRef.current = false; })
+        .catch(err => {
+          console.error('Error saving history:', err);
+          if (!historyErrorLoggedRef.current) {
+            historyErrorLoggedRef.current = true;
+            logEvent('warn', `Produktminnet kunde inte sparas (${describeError(err)})`);
+          }
+        });
     }
   };
 
@@ -971,13 +1019,41 @@ const ShoppingListApp = () => {
     }
   };
 
-  // Load product history from Firestore when listId is available
+  // Load product history from Firestore when listId is available. Falls back to
+  // the old locations once, and copies what it finds to the new document.
   useEffect(() => {
     if (!user || !listId) { setUserProductHistory({}); return; }
-    const ref = doc(db, 'lists', listId, 'productHistory', 'data');
-    getDoc(ref).then(snap => {
-      if (snap.exists()) setUserProductHistory(snap.data());
-    }).catch(err => console.error('Error loading history:', err));
+    let cancelled = false;
+    const load = async () => {
+      const ref = doc(db, ...historyDocParts(listId));
+      try {
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          if (!cancelled) setUserProductHistory(snap.data());
+          return;
+        }
+      } catch (err) {
+        console.error('Error loading history:', err);
+        logEvent('warn', `Produktminnet kunde inte hämtas (${describeError(err)})`);
+        return;
+      }
+      for (const parts of LEGACY_HISTORY_PARTS(listId, user.uid)) {
+        try {
+          const old = await getDoc(doc(db, ...parts));
+          if (old.exists() && Object.keys(old.data() || {}).length > 0) {
+            if (cancelled) return;
+            setUserProductHistory(old.data());
+            setDoc(ref, old.data(), { merge: true }).catch(() => {});
+            logEvent('info', `Produktminnet: hämtade ${Object.keys(old.data()).length} produkter från den gamla platsen`);
+            return;
+          }
+        } catch (_) {
+          // Old path unreadable (typically permission-denied): nothing to migrate.
+        }
+      }
+    };
+    load();
+    return () => { cancelled = true; };
   }, [user, listId]);
 
   // Celebrate the moment the last unchecked item gets checked off. Tracks the
@@ -1031,10 +1107,23 @@ const ShoppingListApp = () => {
   );
   const syncStyle = {
     loading: { chip: 'text-gray-400 bg-gray-800 border border-gray-750' },
+    cached: { chip: 'text-amber-300 bg-amber-500/10 border border-amber-500/30' },
     saving: { chip: 'text-sky-300 bg-sky-500/10 border border-sky-500/30' },
     synced: { chip: 'text-green-400 bg-green-500/10 border border-green-500/30' },
     error: { chip: 'text-red-300 bg-red-500/10 border border-red-500/30' },
+    denied: { chip: 'text-red-300 bg-red-500/10 border border-red-500/30' },
   }[syncStatus.phase] || { chip: 'text-gray-400 bg-gray-800 border border-gray-750' };
+  // Plain function (not a nested component) so the spinner isn't remounted on
+  // every render.
+  const syncIcon = (phase, className) => {
+    if (phase === 'loading') return <span className={`${className} border-2 border-current/40 border-t-current rounded-full animate-spin`} />;
+    if (phase === 'saving') return <RefreshCw className={`${className} animate-spin`} />;
+    if (phase === 'synced') return <Cloud className={className} />;
+    if (phase === 'cached') return <HardDrive className={className} />;
+    if (phase === 'error') return <CloudOff className={className} />;
+    if (phase === 'denied') return <Lock className={className} />;
+    return null;
+  };
 
   const statsItems = useMemo(
     () => [...(activeList.items || []), ...(inkopList.items || [])],
@@ -1185,10 +1274,9 @@ const ShoppingListApp = () => {
                 title="Visa driftlogg"
                 className={`flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-full text-xs font-medium transition-colors mr-1 ${syncStyle.chip}`}
               >
-                {syncStatus.phase === 'loading' && <span className="w-3 h-3 border-2 border-current/40 border-t-current rounded-full animate-spin" />}
-                {syncStatus.phase === 'saving' && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                {syncStatus.phase === 'synced' && <span className="w-2 h-2 rounded-full bg-current" />}
-                {syncStatus.phase === 'error' && <CloudOff className="w-3.5 h-3.5" />}
+                {syncStatus.phase === 'synced'
+                  ? <span className="w-2 h-2 rounded-full bg-current" />
+                  : syncIcon(syncStatus.phase, 'w-3.5 h-3.5')}
                 <span className="hidden xs:inline sm:inline">{STATUS_TEXT[syncStatus.phase]}</span>
               </button>
               <button
@@ -1774,10 +1862,19 @@ const ShoppingListApp = () => {
             {/* Nuläge */}
             <div className="px-6 pb-3">
               <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium ${syncStyle.chip}`}>
-                {syncStatus.phase === 'synced' ? <Cloud className="w-3.5 h-3.5" /> : null}
-                {syncStatus.phase === 'error' ? <CloudOff className="w-3.5 h-3.5" /> : null}
+                {syncIcon(syncStatus.phase, 'w-3.5 h-3.5')}
                 {STATUS_TEXT[syncStatus.phase]}
               </div>
+              {syncStatus.phase === 'cached' && (
+                <p className="text-xs text-gray-500 mt-2">
+                  Du ser kopian på den här enheten. Ändringar sparas på enheten och skickas så fort servern svarar.
+                </p>
+              )}
+              {syncStatus.phase === 'denied' && (
+                <p className="text-xs text-red-300/80 mt-2">
+                  Servern nekar åtkomst till en av listorna. Det är säkerhetsreglerna i Firebase, inte täckningen.
+                </p>
+              )}
               {syncStatus.lastSyncAt && (
                 <p className="text-xs text-gray-500 mt-2">
                   Senast synkad {formatTime(syncStatus.lastSyncAt)} · {activeList.items.length} varor i Matvaror · {inkopList.items.length} i Inköp

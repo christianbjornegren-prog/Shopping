@@ -12,6 +12,7 @@ const server = {
   listeners: new Map(),
   failNextTransaction: false,
   failAll: false,          // "no signal": every transaction fails
+  denyWrites: false,       // security rules refuse the write
   delayMs: 0,              // slow network
   inFlight: 0,
   maxInFlight: 0,
@@ -22,6 +23,7 @@ const server = {
     this.listeners.clear();
     this.failNextTransaction = false;
     this.failAll = false;
+    this.denyWrites = false;
     this.delayMs = 0;
     this.inFlight = 0;
     this.maxInFlight = 0;
@@ -41,7 +43,20 @@ const server = {
   // Push the current document to every subscriber (as Firestore does after a
   // write, and once when you subscribe).
   emit(path, fromCache = false) {
-    (this.listeners.get(path) || new Set()).forEach(fn => fn(this.snapshotFor(path, fromCache)));
+    (this.listeners.get(path) || new Set()).forEach(l => l.onNext(this.snapshotFor(path, fromCache)));
+  },
+  // What the real SDK does with the on-device cache enabled: first the cached
+  // copy, then the server's answer. When the two are identical the second one
+  // is a metadata-only change, which Firestore delivers ONLY to listeners that
+  // asked for `includeMetadataChanges`.
+  emitCachedThenConfirmed(path) {
+    this.emit(path, true);
+    (this.listeners.get(path) || new Set()).forEach(l => {
+      if (l.includeMetadataChanges) l.onNext(this.snapshotFor(path, false));
+    });
+  },
+  emitError(path, error) {
+    (this.listeners.get(path) || new Set()).forEach(l => l.onError?.(error));
   },
 };
 
@@ -49,10 +64,15 @@ vi.mock('./firebase', () => ({ db: { __fake: true }, auth: {}, googleProvider: {
 
 vi.mock('firebase/firestore', () => ({
   doc: (_db, ...parts) => ({ path: parts.join('/') }),
-  onSnapshot: (ref, onNext) => {
+  // Both call shapes of the real API: (ref, onNext, onError) and
+  // (ref, options, onNext, onError).
+  onSnapshot: (ref, ...rest) => {
+    const options = typeof rest[0] === 'function' ? {} : (rest.shift() || {});
+    const [onNext, onError] = rest;
+    const listener = { onNext, onError, includeMetadataChanges: !!options.includeMetadataChanges };
     if (!server.listeners.has(ref.path)) server.listeners.set(ref.path, new Set());
-    server.listeners.get(ref.path).add(onNext);
-    return () => server.listeners.get(ref.path)?.delete(onNext);
+    server.listeners.get(ref.path).add(listener);
+    return () => server.listeners.get(ref.path)?.delete(listener);
   },
   runTransaction: async (_db, fn) => {
     server.inFlight += 1;
@@ -62,6 +82,10 @@ vi.mock('firebase/firestore', () => ({
         server.failNextTransaction = false;
         await new Promise(r => setTimeout(r, server.delayMs));
         throw new Error('unavailable');
+      }
+      if (server.denyWrites) {
+        await new Promise(r => setTimeout(r, server.delayMs));
+        throw Object.assign(new Error('Missing or insufficient permissions.'), { code: 'permission-denied' });
       }
       const pendingWrites = [];
       const tx = {
@@ -466,5 +490,87 @@ describe('useSyncedList – vanlig användning', () => {
     const after = server.writes;
     await new Promise(r => setTimeout(r, 1200));
     expect(server.writes).toBe(after); // echoet från vår egen skrivning ger inga fler
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The bug that froze the app from 4 sep: with the on-device cache enabled the
+// hook only ever saw "visar sparad kopia medan servern svarar" and never a
+// server-confirmed snapshot — because Firestore does not deliver a
+// metadata-only change unless you ask for it. No confirmation → never "ready"
+// → not a single save, on either phone, for days.
+// ---------------------------------------------------------------------------
+describe('REGRESSION: cachen svarade men servern "kom aldrig" – Fryspåsar sparades aldrig', () => {
+  it('blir ansluten även när den sparade kopian är identisk med servern, och sparar sedan', async () => {
+    server.put(KEY, { items: many(3) });
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+
+    await act(async () => { server.emitCachedThenConfirmed(KEY); });
+
+    expect(result.current[2].ready).toBe(true);
+    expect(result.current[2].phase).toBe('synced');
+    expect(getLog().some(e => e.message === 'Matvaror: ansluten till servern – 3 varor')).toBe(true);
+
+    act(() => {
+      result.current[1](prev => ({ ...prev, items: [...prev.items, item(4, { name: 'Fryspåsar' })] }));
+    });
+    await waitFor(() => expect(serverItems().some(i => i.name === 'Fryspåsar')).toBe(true), { timeout: 3000 });
+  });
+
+  it('visar "Lokal kopia" så länge servern inte bekräftat', async () => {
+    server.put(KEY, { items: many(2) });
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+
+    await act(async () => { server.emit(KEY, true); });
+
+    expect(result.current[0].items).toHaveLength(2);   // datan syns direkt …
+    expect(result.current[2].ready).toBe(false);        // … men inget får sparas mot den
+    expect(result.current[2].phase).toBe('cached');
+
+    await act(async () => { server.emit(KEY, false); });
+    expect(result.current[2].phase).toBe('synced');
+  });
+
+  it('en metadata-uppdatering med samma data skriver ingenting och loggar inte igen', async () => {
+    server.put(KEY, { items: many(2) });
+    renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    await act(async () => { server.emitCachedThenConfirmed(KEY); });
+    const logSize = getLog().length;
+
+    // Nätet blinkar: från cache och tillbaka, samma innehåll.
+    await act(async () => { server.emit(KEY, true); server.emit(KEY, false); });
+    await new Promise(r => setTimeout(r, 900));
+
+    expect(server.writes).toBe(0);
+    expect(getLog().length).toBe(logSize);
+  });
+});
+
+describe('permission-denied är regler, inte täckning', () => {
+  it('lyssnaren som nekas visar "Åtkomst nekad" och säger det i loggen', async () => {
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Inköp'));
+    await act(async () => {
+      server.emitError(KEY, Object.assign(new Error('Missing or insufficient permissions.'), { code: 'permission-denied' }));
+    });
+    expect(result.current[2].phase).toBe('denied');
+    expect(getLog()[0].message).toContain('Inköp: servern nekar åtkomst');
+    expect(getLog()[0].message).not.toContain('tappade kontakten');
+  });
+
+  it('en nekad sparning behåller ändringen lokalt, loggar en gång och blir inte "Ingen kontakt"', async () => {
+    clearLog();
+    server.put(KEY, { items: many(1) });
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Inköp'));
+    await act(async () => { deliverInitialSnapshot(); });
+
+    server.denyWrites = true;
+    act(() => {
+      result.current[1](prev => ({ ...prev, items: [...prev.items, item(9)] }));
+    });
+    await waitFor(() => expect(result.current[2].phase).toBe('denied'), { timeout: 3000 });
+    expect(result.current[0].items).toHaveLength(2);
+    const deniedLines = getLog().filter(e => e.message.includes('nekar åtkomst'));
+    expect(deniedLines).toHaveLength(1);
+    expect(JSON.parse(localStorage.getItem('chrelin:pending:lists/L1')).list.items).toHaveLength(2);
   });
 });

@@ -20,6 +20,11 @@ import { logEvent } from './syncLog';
 export const SAVE_DEBOUNCE_MS = 600;
 export const SAVE_RETRY_MS = 5000;
 
+// "permission-denied" comes from the server's security rules, never from bad
+// signal — it deserves its own status so it is not mislabelled "Ingen kontakt".
+const isDenied = (error) => error?.code === 'permission-denied'
+  || /permission-denied|Missing or insufficient permissions/i.test(String(error?.message || ''));
+
 // ---------------------------------------------------------------------------
 // Pending-edit persistence.
 //
@@ -76,7 +81,9 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
   const readyRef = useRef(false);     // do we have a server-confirmed baseline?
   // Exposed to the UI so it can show what is actually going on instead of an
   // empty list (an empty list looks exactly like data loss).
-  // phase: 'loading' | 'synced' | 'saving' | 'error'
+  // phase: 'loading' | 'cached' | 'synced' | 'saving' | 'error' | 'denied'
+  //   cached – showing the on-device copy; the server has not confirmed it (yet)
+  //   denied – the server's security rules refuse this document
   const [status, setStatus] = useState({ ready: false, phase: 'loading', lastSyncAt: null });
   const setReady = (value) => setStatus(s => ({ ...s, ready: value, phase: value ? s.phase : 'loading' }));
   const labelRef = useRef(label);
@@ -138,6 +145,7 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
   const save = useRef(null);
   const inFlightRef = useRef(false);   // one transaction at a time
   const dirtyRef = useRef(false);      // an edit arrived mid-flight: go again
+  const deniedLoggedRef = useRef(false); // log a permission problem once, not every retry
   save.current = async () => {
     const parts = partsRef.current;
     if (!path || !parts || !readyRef.current) return;
@@ -165,6 +173,7 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
 
       baseRef.current = merged;
       serverSigRef.current = listSignature(merged);
+      deniedLoggedRef.current = false;
       const savedCount = (merged.items || []).length;
       clearPending(path);
       logEvent('ok', `${labelRef.current}: sparade – ${savedCount} varor`);
@@ -181,10 +190,22 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
       // Offline or contention: keep the edit in memory and try again. Nothing
       // is lost because the next attempt re-merges against the server.
       console.error('Kunde inte spara listan, försöker igen:', error);
-      logEvent('error', `${labelRef.current}: kunde inte spara – försöker igen (${error?.code || error?.message || 'okänt fel'})`);
-      setStatus(s => ({ ...s, phase: 'error' }));
+      const denied = isDenied(error);
+      if (denied) {
+        // Security rules, not signal. Log it once, back off hard, and keep the
+        // edit on disk (the pending copy) so nothing is thrown away.
+        if (!deniedLoggedRef.current) {
+          logEvent('error', `${labelRef.current}: kunde inte spara – servern nekar åtkomst (permission-denied)`);
+          deniedLoggedRef.current = true;
+        }
+        setStatus(s => ({ ...s, phase: 'denied' }));
+      } else {
+        deniedLoggedRef.current = false;
+        logEvent('error', `${labelRef.current}: kunde inte spara – försöker igen (${error?.code || error?.message || 'okänt fel'})`);
+        setStatus(s => ({ ...s, phase: 'error' }));
+      }
       clearTimeout(retryTimer.current);
-      retryTimer.current = setTimeout(() => save.current?.(), SAVE_RETRY_MS);
+      retryTimer.current = setTimeout(() => save.current?.(), denied ? SAVE_RETRY_MS * 12 : SAVE_RETRY_MS);
     } finally {
       inFlightRef.current = false;
       if (dirtyRef.current) {
@@ -196,12 +217,23 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
 
   // Live updates. Remote data is merged into local state rather than replacing
   // it, so edits made while a snapshot is in flight are not dropped.
+  //
+  // `includeMetadataChanges` is essential, not cosmetic. With the on-device
+  // cache enabled, Firestore first delivers the cached copy (fromCache: true)
+  // and then, once the server has answered, a second snapshot with
+  // fromCache: false. If the data is identical — the normal case when nobody
+  // else has edited — that second snapshot is a *metadata-only* change, and
+  // without this flag Firestore never delivers it. We would then sit on a
+  // cached copy forever, never mark the list as server-confirmed, and never
+  // save a single edit. That is exactly what happened: "visar sparad kopia
+  // medan servern svarar" in the log, and nothing after it, for days.
   useEffect(() => {
     const parts = partsRef.current;
     if (!path || !parts) return;
     const ref = doc(db, ...parts);
     const unsubscribe = onSnapshot(
       ref,
+      { includeMetadataChanges: true },
       (snap) => {
         const fromCache = snap.metadata?.fromCache;
         if (snap.exists()) {
@@ -235,8 +267,13 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
             if (isFirst) logEvent('ok', `${labelRef.current}: ansluten till servern – ${n} varor`);
             else if (remoteChanged) logEvent('info', `${labelRef.current}: uppdatering från servern – ${n} varor`);
             setStatus(s => ({ ...s, ready: true, phase: 'synced', lastSyncAt: new Date().toISOString() }));
-          } else if (isFirst) {
-            logEvent('info', `${labelRef.current}: visar sparad kopia medan servern svarar`);
+          } else {
+            if (isFirst) logEvent('info', `${labelRef.current}: visar sparad kopia medan servern svarar`);
+            // Cached data on screen, server not (or no longer) confirming it.
+            // Don't hide a save that is in progress or has failed.
+            setStatus(s => (s.phase === 'saving' || s.phase === 'error' || s.phase === 'denied'
+              ? s
+              : { ...s, phase: 'cached' }));
           }
         } else if (!fromCache) {
           baseRef.current = { items: [] };
@@ -257,6 +294,13 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
       },
       (error) => {
         console.error('Sync-fel:', error);
+        if (isDenied(error)) {
+          // Not a connectivity problem: the server's security rules refuse this
+          // document. Retrying won't help; say so plainly.
+          logEvent('error', `${labelRef.current}: servern nekar åtkomst till listan (permission-denied) – säkerhetsreglerna måste tillåta den`);
+          setStatus(s => ({ ...s, phase: 'denied' }));
+          return;
+        }
         logEvent('error', `${labelRef.current}: tappade kontakten (${error?.code || error?.message || 'okänt fel'})`);
         setStatus(s => ({ ...s, phase: 'error' }));
       }

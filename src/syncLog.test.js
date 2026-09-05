@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  getLog, logEvent, clearLog, formatTime, logToText, combineStatus, LOG_LIMIT,
+  getLog, logEvent, clearLog, formatTime, logToText, combineStatus, LOG_LIMIT, STATUS_TEXT,
 } from './syncLog.js';
 
 beforeEach(() => {
@@ -82,5 +82,20 @@ describe('combineStatus', () => {
   it('klarar tom indata', () => {
     expect(combineStatus([]).phase).toBe('loading');
     expect(combineStatus(undefined).phase).toBe('loading');
+  });
+});
+
+describe('combineStatus – nya lägen', () => {
+  it('nekad åtkomst väger tyngst, lokal kopia väger tyngre än synkad', () => {
+    expect(combineStatus([{ phase: 'error' }, { phase: 'denied' }]).phase).toBe('denied');
+    expect(combineStatus([{ phase: 'synced' }, { phase: 'cached' }]).phase).toBe('cached');
+    expect(combineStatus([{ phase: 'loading' }, { phase: 'cached' }]).phase).toBe('loading');
+  });
+
+  it('har en text för varje läge', () => {
+    ['loading', 'cached', 'saving', 'synced', 'error', 'denied'].forEach(p => {
+      expect(typeof STATUS_TEXT[p]).toBe('string');
+      expect(STATUS_TEXT[p].length).toBeGreaterThan(0);
+    });
   });
 });
