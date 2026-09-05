@@ -21,6 +21,7 @@ import { newItemId, mergeLists } from './sync';
 import { getLog, subscribeLog, clearLog, logEvent, formatTime, logToText, combineStatus, STATUS_TEXT } from './syncLog';
 import { useSyncedList } from './useSyncedList';
 import { readSnapshots, describeSnapshot } from './snapshots';
+import { shouldTryLegacyPickup, DONE } from './legacyPickup';
 import { db } from './firebase';
 import {
   normalize,
@@ -417,6 +418,7 @@ const LEGACY_HISTORY_PARTS = (listId, uid) => [
   ['users', uid, 'productHistory', 'data'],
 ];
 const describeError = (error) => error?.code || error?.message || 'okänt fel';
+const LEGACY_DENIED_CODES = ['permission-denied'];
 
 const ShoppingListApp = () => {
   const [user, setUser] = useState(null);
@@ -524,23 +526,38 @@ const ShoppingListApp = () => {
     'Inköp'
   );
 
-  // One-time pickup of an Inköp list left at the old (subcollection) path.
+  // Pickup of an Inköp list left at the old (subcollection) path.
   // Runs only once the new document is server-confirmed and still empty, so it
   // can never overwrite anything; a merge with no baseline is a pure union.
+  // Retried at most once a day, so pasting the rules later is picked up on its
+  // own without filling the log with a denial at every start.
   const inkopMigratedRef = useRef(null);
   useEffect(() => {
     if (!user || !listId || !inkopStatus.ready) return;
     if (inkopMigratedRef.current === listId) return;
     if ((inkopList.items || []).length > 0) { inkopMigratedRef.current = listId; return; }
+
+    const key = `chrelin:inkop-gammal:${listId}`;
+    let last = null;
+    try { last = localStorage.getItem(key); } catch (_) {}
+    if (!shouldTryLegacyPickup(last)) { inkopMigratedRef.current = listId; return; }
+
     inkopMigratedRef.current = listId;
+    const mark = (value) => { try { localStorage.setItem(key, value); } catch (_) {} };
+    mark(new Date().toISOString());
+
     getDoc(doc(db, ...LEGACY_INKOP_PARTS(listId))).then(snap => {
+      mark(DONE);   // readable: nothing more to fetch, ever
       const old = snap.exists() ? snap.data() : null;
       const n = (old?.items || []).length;
       if (!n) return;
       setInkopList(prev => mergeLists(null, prev, { items: old.items }));
-      logEvent('info', `Inköp: hämtade ${n} varor från den gamla platsen`);
+      logEvent('ok', `Inköp: hämtade ${n} varor från den gamla platsen`);
     }).catch(error => {
-      logEvent('info', `Inköp: den gamla platsen gick inte att läsa (${describeError(error)}) – kör vidare med den nya`);
+      // Expected until the rules are pasted. Not a fault, and not an error.
+      logEvent('info', LEGACY_DENIED_CODES.includes(error?.code)
+        ? 'Inköp: den gamla listan är låst av säkerhetsreglerna, inget att hämta'
+        : `Inköp: den gamla platsen gick inte att läsa (${describeError(error)})`);
     });
   }, [user, listId, inkopStatus.ready, inkopList.items]);
 
