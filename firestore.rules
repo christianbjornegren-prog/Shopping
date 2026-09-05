@@ -2,10 +2,14 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // En regel för lists/{listId} täcker BARA själva dokumentet – inte
+    // underkollektioner. Det var därför lists/{id}/inköp/active nekades vid
+    // varje start medan huvudlistan fungerade. {document=**} täcker allt under
+    // listan, så samma miss kan inte hända igen.
     match /lists/{listId} {
       allow read, write: if request.auth != null;
 
-      match /inköp/{document} {
+      match /{document=**} {
         allow read, write: if request.auth != null;
       }
     }
@@ -13,7 +17,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
 
-      match /productHistory/{document} {
+      match /{document=**} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
     }
