@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, act, waitFor, cleanup } from '@testing-library/react';
 
 // ---------------------------------------------------------------------------
 // A stand-in Firestore: one shared document store, live listeners, and
@@ -11,12 +11,20 @@ const server = {
   docs: new Map(),
   listeners: new Map(),
   failNextTransaction: false,
+  failAll: false,          // "no signal": every transaction fails
+  delayMs: 0,              // slow network
+  inFlight: 0,
+  maxInFlight: 0,
   writes: 0,
 
   reset() {
     this.docs.clear();
     this.listeners.clear();
     this.failNextTransaction = false;
+    this.failAll = false;
+    this.delayMs = 0;
+    this.inFlight = 0;
+    this.maxInFlight = 0;
     this.writes = 0;
   },
   put(path, data) {
@@ -47,26 +55,33 @@ vi.mock('firebase/firestore', () => ({
     return () => server.listeners.get(ref.path)?.delete(onNext);
   },
   runTransaction: async (_db, fn) => {
-    if (server.failNextTransaction) {
-      server.failNextTransaction = false;
-      throw new Error('simulerat nätverksfel');
+    server.inFlight += 1;
+    server.maxInFlight = Math.max(server.maxInFlight, server.inFlight);
+    try {
+      if (server.failAll || server.failNextTransaction) {
+        server.failNextTransaction = false;
+        await new Promise(r => setTimeout(r, server.delayMs));
+        throw new Error('unavailable');
+      }
+      const pendingWrites = [];
+      const tx = {
+        // A real transaction hits the network before the callback continues.
+        get: async (ref) => {
+          await new Promise(r => setTimeout(r, server.delayMs));
+          return server.snapshotFor(ref.path);
+        },
+        set: (ref, data) => pendingWrites.push([ref.path, data]),
+      };
+      const result = await fn(tx);
+      pendingWrites.forEach(([path, data]) => {
+        server.writes += 1;
+        server.put(path, data);
+        server.emit(path);
+      });
+      return result;
+    } finally {
+      server.inFlight -= 1;
     }
-    const pendingWrites = [];
-    const tx = {
-      // A real transaction hits the network before the callback continues.
-      get: async (ref) => {
-        await new Promise(r => setTimeout(r, 0));
-        return server.snapshotFor(ref.path);
-      },
-      set: (ref, data) => pendingWrites.push([ref.path, data]),
-    };
-    const result = await fn(tx);
-    pendingWrites.forEach(([path, data]) => {
-      server.writes += 1;
-      server.put(path, data);
-      server.emit(path);
-    });
-    return result;
   },
 }));
 
@@ -90,8 +105,11 @@ const serverItems = () => server.docs.get(KEY)?.items ?? [];
 // Subscribe delivery is async in Firestore; mimic that.
 const deliverInitialSnapshot = () => server.emit(KEY);
 
-beforeEach(() => server.reset());
-afterEach(() => vi.restoreAllMocks());
+beforeEach(() => { server.reset(); localStorage.clear(); });
+// Vitest runs without `globals`, so Testing Library's automatic unmount does
+// not kick in. Without this, hooks from earlier tests stay mounted with live
+// retry timers and write their stale lists into later tests' fake server.
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('useSyncedList – laddning', () => {
   it('hämtar serverns lista vid start', async () => {
@@ -245,6 +263,106 @@ describe('REGRESSION: vara tillagd innan listan hunnit ladda', () => {
       { timeout: 3000 }
     );
     expect(result.current[2].phase).toBe('error');
+  });
+});
+
+describe('REGRESSION: Granola kom tillbaka – ändring i butik utan täckning', () => {
+  const GRANOLA = item(1, { name: 'Granola' });
+  const MJOLK = item(2, { name: 'Mjölk' });
+
+  it('en ändring gjord utan täckning överlever att appen stängs, och sparas sedan', async () => {
+    server.put(KEY, { items: [GRANOLA, MJOLK] });
+    const first = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    await act(async () => { deliverInitialSnapshot(); });
+    expect(first.result.current[0].items).toHaveLength(2);
+
+    // Inne i butiken: en plupp. Varje sparning misslyckas.
+    server.failAll = true;
+    act(() => {
+      first.result.current[1](prev => ({
+        ...prev,
+        items: [...prev.items.filter(i => i.name !== 'Granola'), item(3, { name: 'Fryspåsar' })],
+      }));
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 900)); });
+    expect(first.result.current[2].phase).toBe('error');
+    expect(serverItems().some(i => i.name === 'Granola')).toBe(true); // servern vet inget än
+
+    // Appen stängs.
+    first.unmount();
+
+    // Appen öppnas igen (fortfarande utan täckning).
+    const second = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    const names = second.result.current[0].items.map(i => i.name);
+    expect(names).toContain('Fryspåsar');
+    expect(names).not.toContain('Granola');   // <- det som gick fel förut
+    expect(getLog().some(e => e.message.includes('återställde osparade ändringar'))).toBe(true);
+
+    // Serverns snapshot (som fortfarande har Granola) får INTE återuppliva den.
+    await act(async () => { deliverInitialSnapshot(); });
+    expect(second.result.current[0].items.map(i => i.name)).not.toContain('Granola');
+
+    // Ute ur butiken: täckning igen -> sparas.
+    server.failAll = false;
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+      await new Promise(r => setTimeout(r, 100));
+    });
+    await waitFor(() => expect(serverItems().map(i => i.name).sort()).toEqual(['Fryspåsar', 'Mjölk']), { timeout: 4000 });
+
+    // Och den lokala kopian är städad när allt är sparat.
+    expect(localStorage.getItem('chrelin:pending:' + KEY)).toBeNull();
+  }, 15000); // long end-to-end story with real timers
+
+  it('en avbockning utan täckning överlever också', async () => {
+    server.put(KEY, { items: [GRANOLA, MJOLK] });
+    const first = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    await act(async () => { deliverInitialSnapshot(); });
+
+    server.failAll = true;
+    act(() => {
+      first.result.current[1](prev => ({
+        ...prev,
+        items: prev.items.map(i => i.name === 'Mjölk'
+          ? { ...i, checked: true, checkedAt: '2026-09-05T17:10:00.000Z', updatedAt: '2026-09-05T17:10:00.000Z' }
+          : i),
+      }));
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 900)); });
+    first.unmount();
+
+    const second = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    expect(second.result.current[0].items.find(i => i.name === 'Mjölk')?.checked).toBe(true);
+
+    server.failAll = false;
+    await act(async () => { deliverInitialSnapshot(); });
+    await waitFor(() => expect(serverItems().find(i => i.name === 'Mjölk')?.checked).toBe(true), { timeout: 4000 });
+  });
+
+  it('kör aldrig två sparningar samtidigt, och tappar inte ändringar under en långsam', async () => {
+    server.put(KEY, { items: [MJOLK] });
+    const { result } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    await act(async () => { deliverInitialSnapshot(); });
+
+    server.delayMs = 400; // trögt nät
+    act(() => { result.current[1](prev => ({ ...prev, items: [...prev.items, item(10, { name: 'A' })] })); });
+    await act(async () => { await new Promise(r => setTimeout(r, 700)); }); // första transaktionen är igång
+    act(() => { result.current[1](prev => ({ ...prev, items: [...prev.items, item(11, { name: 'B' })] })); });
+    act(() => { result.current[1](prev => ({ ...prev, items: [...prev.items, item(12, { name: 'C' })] })); });
+
+    await waitFor(
+      () => expect(serverItems().map(i => i.name).sort()).toEqual(['A', 'B', 'C', 'Mjölk']),
+      { timeout: 6000 }
+    );
+    expect(server.maxInFlight).toBe(1);
+  });
+
+  it('skräpar inte ner lagringen med tomma tillstånd', async () => {
+    server.put(KEY, { items: many(2) });
+    const { unmount } = renderHook(() => useSyncedList(PATH, makeEmpty, 'Matvaror'));
+    // Appen stängs innan första snapshoten hunnit fram – inget att spara.
+    unmount();
+    expect(localStorage.getItem('chrelin:pending:' + KEY)).toBeNull();
   });
 });
 

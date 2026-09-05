@@ -418,19 +418,41 @@ const ShoppingListApp = () => {
       return;
     }
     const userRef = doc(db, 'users', user.uid);
+    const joinParam = new URLSearchParams(window.location.search).get('join');
+
+    // Start from the locally cached listId so the list can render instantly
+    // from the on-device cache — the shop with one bar of signal must not
+    // block on a server round-trip. A user's listId never changes except via
+    // an invite link, so the server lookup below only verifies it.
+    const cacheKey = `chrelin:listId:${user.uid}`;
+    let cachedListId = null;
+    try { cachedListId = localStorage.getItem(cacheKey); } catch (_) {}
+    if (cachedListId && !joinParam) setListId(cachedListId);
+
+    const remember = (id) => { try { localStorage.setItem(cacheKey, id); } catch (_) {} };
+
     const setup = async () => {
-      const joinParam = new URLSearchParams(window.location.search).get('join');
-      const userDoc = await getDoc(userRef);
+      let userDoc;
+      try {
+        userDoc = await getDoc(userRef);
+      } catch (error) {
+        // Offline / weak signal: fine if we already have a cached listId.
+        if (cachedListId) { logEvent('info', 'Kunde inte nå servern vid start – kör vidare från lokal kopia'); return; }
+        logEvent('error', `Kunde inte hämta din profil (${error?.code || error?.message || 'okänt fel'})`);
+        return;
+      }
       if (joinParam) {
         const joinListDoc = await getDoc(doc(db, 'lists', joinParam));
         if (joinListDoc.exists()) {
           await setDoc(userRef, { listId: joinParam, email: user.email });
+          remember(joinParam);
           setListId(joinParam);
           window.history.replaceState({}, '', window.location.pathname);
           return;
         }
       }
       if (userDoc.exists() && userDoc.data().listId) {
+        remember(userDoc.data().listId);
         setListId(userDoc.data().listId);
       } else {
         // New user: create a shared list using their UID as the list ID
@@ -443,10 +465,11 @@ const ShoppingListApp = () => {
           updatedAt: new Date().toISOString()
         });
         await setDoc(userRef, { listId: newListId, email: user.email });
+        remember(newListId);
         setListId(newListId);
       }
     };
-    setup();
+    setup().catch(error => logEvent('error', `Fel vid start (${error?.code || error?.message || 'okänt fel'})`));
   }, [user]);
 
   // Active list – merge-synced with Firestore (see useSyncedList above).

@@ -20,6 +20,45 @@ import { logEvent } from './syncLog';
 export const SAVE_DEBOUNCE_MS = 600;
 export const SAVE_RETRY_MS = 5000;
 
+// ---------------------------------------------------------------------------
+// Pending-edit persistence.
+//
+// Saves go through a Firestore transaction, which (unlike setDoc) is never
+// queued offline: on a weak connection it simply fails and we retry. That is
+// the right call for safety — but until now the retry lived only in React
+// memory, so closing the app on one bar of signal in the shop silently threw
+// the edit away. Now the unsaved list (together with the baseline it was made
+// against, so a pending *delete* is not resurrected by the next snapshot) is
+// kept in localStorage and restored on the next start.
+// ---------------------------------------------------------------------------
+const PENDING_PREFIX = 'chrelin:pending:';
+
+export const readPending = (path) => {
+  try {
+    const raw = globalThis.localStorage?.getItem(PENDING_PREFIX + path);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && Array.isArray(parsed.list?.items) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+};
+
+export const writePending = (path, base, list) => {
+  try {
+    globalThis.localStorage?.setItem(
+      PENDING_PREFIX + path,
+      JSON.stringify({ base: base || null, list, savedAt: new Date().toISOString() })
+    );
+  } catch (_) {
+    // Storage full/blocked: the in-memory retry still runs; we just lose the
+    // survive-a-restart guarantee for this one edit.
+  }
+};
+
+export const clearPending = (path) => {
+  try { globalThis.localStorage?.removeItem(PENDING_PREFIX + path); } catch (_) {}
+};
+
 export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
   const path = pathParts && pathParts.every(Boolean) ? pathParts.join('/') : null;
 
@@ -64,20 +103,50 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
     clearTimeout(retryTimer.current);
 
     const isFirstResolve = previous === null && path !== null;
-    if (isFirstResolve) return; // keep what the user has already entered
+    if (!isFirstResolve) {
+      const empty = makeEmptyRef.current();
+      listRef.current = empty;
+      setList(empty);
+    }
+    // (isFirstResolve: keep what the user has already typed while signing in.)
 
-    const empty = makeEmptyRef.current();
-    listRef.current = empty;
-    setList(empty);
+    // Bring back edits that never reached the server before the app was closed.
+    if (path) {
+      const pending = readPending(path);
+      const meaningful = pending && (pending.base || (pending.list.items || []).length > 0);
+      if (pending && !meaningful) clearPending(path);
+      if (meaningful) {
+        // Union with anything typed just now; nothing is thrown away.
+        const restored = mergeLists(null, listRef.current, pending.list);
+        listRef.current = restored;
+        setList(restored);
+        if (pending.base) {
+          // We know what the server looked like when these edits were made, so
+          // deletes among them are real deletes, and we may save straight away.
+          baseRef.current = pending.base;
+          serverSigRef.current = listSignature(pending.base);
+          readyRef.current = true;
+          setStatus(s => ({ ...s, ready: true, phase: 'saving' }));
+        }
+        logEvent('info', `${labelRef.current}: återställde osparade ändringar (${(restored.items || []).length} varor)`);
+      }
+    }
   }, [path]);
 
   // Merge-on-write. Reads the current server document inside a transaction so a
   // concurrent change can never be lost, then writes the merged result.
   const save = useRef(null);
+  const inFlightRef = useRef(false);   // one transaction at a time
+  const dirtyRef = useRef(false);      // an edit arrived mid-flight: go again
   save.current = async () => {
     const parts = partsRef.current;
     if (!path || !parts || !readyRef.current) return;
-    if (listSignature(listRef.current) === serverSigRef.current) return;
+    if (listSignature(listRef.current) === serverSigRef.current) {
+      clearPending(path);
+      return;
+    }
+    if (inFlightRef.current) { dirtyRef.current = true; return; }
+    inFlightRef.current = true;
 
     const baseAtWrite = baseRef.current;
     setStatus(s => (s.phase === 'saving' ? s : { ...s, phase: 'saving' }));
@@ -97,6 +166,7 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
       baseRef.current = merged;
       serverSigRef.current = listSignature(merged);
       const savedCount = (merged.items || []).length;
+      clearPending(path);
       logEvent('ok', `${labelRef.current}: sparade – ${savedCount} varor`);
       setStatus(s => ({ ...s, phase: 'synced', lastSyncAt: new Date().toISOString() }));
       // Fold the result back in; anything the user changed mid-write is newer
@@ -115,6 +185,12 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
       setStatus(s => ({ ...s, phase: 'error' }));
       clearTimeout(retryTimer.current);
       retryTimer.current = setTimeout(() => save.current?.(), SAVE_RETRY_MS);
+    } finally {
+      inFlightRef.current = false;
+      if (dirtyRef.current) {
+        dirtyRef.current = false;
+        setTimeout(() => save.current?.(), 0);
+      }
     }
   };
 
@@ -190,12 +266,26 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
 
   // Debounced save whenever local state drifts from the server.
   useEffect(() => {
-    if (!path || !readyRef.current) return;
-    if (listSignature(list) === serverSigRef.current) return;
+    if (!path) return;
+    if (readyRef.current && listSignature(list) === serverSigRef.current) {
+      clearPending(path);
+      return;
+    }
+    // Unsaved: keep a copy on disk right away, so closing the app can't lose it
+    // (also before the first load – base is null then, and the restore unions).
+    const hasContent = (list.items || []).length > 0;
+    if (hasContent || baseRef.current) writePending(path, baseRef.current, list);
+    if (!readyRef.current) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => save.current?.(), SAVE_DEBOUNCE_MS);
     return () => clearTimeout(saveTimer.current);
   }, [list, path]);
+
+  // Stop timers on unmount so nothing fires into a dead hook.
+  useEffect(() => () => {
+    clearTimeout(saveTimer.current);
+    clearTimeout(retryTimer.current);
+  }, []);
 
   // Don't let pending edits die when the app is backgrounded or goes offline.
   useEffect(() => {
