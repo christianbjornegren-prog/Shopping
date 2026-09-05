@@ -3,6 +3,7 @@ import { doc, onSnapshot, runTransaction } from 'firebase/firestore';
 import { db } from './firebase';
 import { mergeLists, listSignature, stripUndefined } from './sync';
 import { logEvent } from './syncLog';
+import { recordSnapshot } from './snapshots';
 
 // ===========================================================================
 // Shared-list sync.
@@ -174,6 +175,7 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
       baseRef.current = merged;
       serverSigRef.current = listSignature(merged);
       deniedLoggedRef.current = false;
+      recordSnapshot(path, merged);
       const savedCount = (merged.items || []).length;
       clearPending(path);
       logEvent('ok', `${labelRef.current}: sparade – ${savedCount} varor`);
@@ -263,6 +265,8 @@ export const useSyncedList = (pathParts, makeEmpty, label = 'Listan') => {
             baseRef.current = remote;
             serverSigRef.current = remoteSig;
             readyRef.current = true;
+            // Keep a restorable copy of every state the server has confirmed.
+            recordSnapshot(path, remote);
             const n = (remote.items || []).length;
             if (isFirst) logEvent('ok', `${labelRef.current}: ansluten till servern – ${n} varor`);
             else if (remoteChanged) logEvent('info', `${labelRef.current}: uppdatering från servern – ${n} varor`);

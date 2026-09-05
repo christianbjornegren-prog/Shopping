@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp, Mic, ClipboardList, Share2, Copy, Activity, Download, RefreshCw, CloudOff, Cloud, Lock, HardDrive } from 'lucide-react';
+import { Search, Plus, Check, Trash2, UserPlus, ShoppingCart, X, Archive, Clock, LogOut, ChevronDown, ChevronUp, BarChart3, Users, TrendingUp, Mic, ClipboardList, Share2, Copy, Activity, Download, RefreshCw, CloudOff, Cloud, Lock, HardDrive, History } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -20,6 +20,7 @@ import { collection, doc, onSnapshot, setDoc, getDoc, runTransaction } from 'fir
 import { newItemId, mergeLists } from './sync';
 import { getLog, subscribeLog, clearLog, logEvent, formatTime, logToText, combineStatus, STATUS_TEXT } from './syncLog';
 import { useSyncedList } from './useSyncedList';
+import { readSnapshots, describeSnapshot } from './snapshots';
 import { db } from './firebase';
 import {
   normalize,
@@ -554,6 +555,33 @@ const ShoppingListApp = () => {
     setToasts(prev => [...prev, { id, message, action }]);
     setTimeout(() => dismissToast(id), duration);
     return id;
+  };
+
+  // --- Versionshistorik ---
+  // Varje enhet sparar de lägen servern har bekräftat, så en dålig dag går att
+  // ta tillbaka. Läses när driftloggen öppnas – det är där man letar.
+  const [versions, setVersions] = useState([]);
+  const [showVersions, setShowVersions] = useState(false);
+  useEffect(() => {
+    if (!showLog || !listId) { setVersions([]); return; }
+    const tag = (parts, label) => readSnapshots(parts.join('/')).map(v => ({ ...v, label }));
+    setVersions(
+      [...tag(['lists', listId], 'Matvaror'), ...tag(inkopDocParts(listId), 'Inköp')]
+        .sort((a, b) => (a.t < b.t ? 1 : -1))
+        .slice(0, 12)
+    );
+  }, [showLog, listId]);
+
+  // Att återställa lägger bara tillbaka det som saknas. Ingenting som ligger på
+  // listan idag tas bort, så en återställning kan aldrig själv bli en förlust.
+  const restoreVersion = (version) => {
+    const isInkop = version.label === 'Inköp';
+    const current = isInkop ? inkopList : activeList;
+    const next = mergeLists(null, current, { items: version.items });
+    const added = (next.items || []).length - (current.items || []).length;
+    (isInkop ? setInkopList : setActiveList)(next);
+    logEvent('ok', `${version.label}: la tillbaka ${added} varor från ${describeSnapshot(version.t)}`);
+    showToast(added > 0 ? `${added} varor tillbaka 📦` : 'Inget saknades i den versionen');
   };
 
   // --- Voice input (sv-SE): hands-free adding while cooking ---
@@ -1881,6 +1909,43 @@ const ShoppingListApp = () => {
                 </p>
               )}
             </div>
+
+            {/* Tidigare versioner – ångerknappen för hela listan */}
+            {versions.length > 0 && (
+              <div className="px-6 pb-3">
+                <button
+                  onClick={() => setShowVersions(v => !v)}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-white transition-colors"
+                >
+                  <History className="w-3.5 h-3.5" />
+                  Tidigare versioner ({versions.length})
+                  {showVersions ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+                {showVersions && (
+                  <>
+                    <p className="text-xs text-gray-500 mt-2 mb-2">
+                      Lägger tillbaka varor som saknas. Ingenting du har nu tas bort.
+                    </p>
+                    <ul className="space-y-1">
+                      {versions.map((v, i) => (
+                        <li key={`${v.label}-${v.t}-${i}`} className="flex items-center gap-3 text-sm">
+                          <span className="text-gray-300 flex-1 min-w-0 truncate">
+                            {describeSnapshot(v.t)}
+                            <span className="text-gray-500"> · {v.label} · {v.items.length} varor</span>
+                          </span>
+                          <button
+                            onClick={() => restoreVersion(v)}
+                            className="px-2.5 py-1 text-xs font-medium rounded-lg bg-gray-700 hover:bg-gray-600 text-white transition-colors flex-shrink-0"
+                          >
+                            Återställ
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Händelser */}
             <div className="flex-1 overflow-y-auto px-6 pb-2 min-h-0">
